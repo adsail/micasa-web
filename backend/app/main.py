@@ -2,11 +2,12 @@ import os
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import auth
 from .db import (
     get_conn,
     get_write_conn,
@@ -23,7 +24,23 @@ from .db import (
 
 app = FastAPI(title="micasa web", description="Read-only micasa home-maintenance API")
 
-api = FastAPI(title="micasa API")
+# Optional single-account auth. Loading the config here means a bad AUTH_*
+# setup aborts startup rather than silently serving an unprotected app. With
+# AUTH_ENABLED off (the default) the dependency below is a no-op.
+AUTH_CONFIG = auth.init_auth()
+
+# The app-level dependency guards every route added to `api`, so reads are
+# protected too and new endpoints are covered by default. Interactive docs are
+# withheld while auth is on: Starlette adds them as plain routes that an
+# app-level dependency cannot cover.
+api = FastAPI(
+    title="micasa API",
+    dependencies=[Depends(auth.require_session)],
+    docs_url=None if AUTH_CONFIG.enabled else "/docs",
+    redoc_url=None if AUTH_CONFIG.enabled else "/redoc",
+    openapi_url=None if AUTH_CONFIG.enabled else "/openapi.json",
+)
+api.include_router(auth.router)
 
 STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
 
