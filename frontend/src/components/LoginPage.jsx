@@ -31,7 +31,7 @@ export default function LoginPage({ theme, onToggleTheme, onSuccess }) {
   }
 
   return (
-    <div className="flex min-h-full flex-col items-center justify-center px-4 py-12">
+    <div className="relative flex min-h-full flex-col items-center justify-center px-4 py-12">
       <button
         onClick={onToggleTheme}
         aria-label="Toggle theme"
