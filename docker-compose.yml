@@ -1,0 +1,22 @@
+services:
+  micasa-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: micasa-web
+    restart: unless-stopped
+    ports:
+      # Host PORT (default 8282) -> container 8000
+      - "${PORT:-8282}:8000"
+    volumes:
+      # Your micasa data dir (must contain micasa.db). Read endpoints open
+      # SQLite strictly read-only (mode=ro + query_only); only the write
+      # endpoints open a writable connection, and every mutation is preceded
+      # by an auto-backup written to <dir>/backups.
+      - ${MICASA_DATA_DIR:-/home/pi/micasa}:/data
+      # Optional: OpEx snapshot DB (separate from micasa), mounted read-only.
+      # Only used when OPEX_ENABLED=true. Safe to leave; dir is created if set.
+      - ${OPEX_DATA_DIR:-/home/pi/opex}:/data/opex:ro
+    environment:
+      - STATIC_DIR=/app/static
+      - OPEX_ENABLED=${OPEX_ENABLED:-false}
