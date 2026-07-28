@@ -1,5 +1,5 @@
 import React from 'react'
-import { api } from './api'
+import { api, setUnauthorizedHandler } from './api'
 import { useAsync, Spinner, ErrorBox, Stat } from './components/ui'
 import { fmtNum } from './format'
 import HouseTab from './components/HouseTab'
@@ -12,6 +12,8 @@ import VendorsTab from './components/VendorsTab'
 import DocsTab from './components/DocsTab'
 import OpExTab from './components/OpExTab'
 import MobileMenu from './components/MobileMenu'
+import LoginPage from './components/LoginPage'
+import AccountMenu from './components/AccountMenu'
 
 const TABS = [
   { id: 'house', label: 'House', C: HouseTab },
@@ -194,8 +196,7 @@ function HeaderCard({ house }) {
   )
 }
 
-export default function App() {
-  const [theme, toggle] = useTheme()
+function AppShell({ theme, toggle, auth, onLogout }) {
   const [active, setActive] = React.useState(() => {
     const h = window.location.hash.replace('#', '')
     return TABS.some((t) => t.id === h) ? h : 'house'
@@ -226,6 +227,7 @@ export default function App() {
             <div className="flex shrink-0 items-center gap-2">
               <NotificationBell count={overdueCount} onClick={() => setDrawerOpen(true)} />
               <ThemeToggle theme={theme} toggle={toggle} />
+              {auth.username && <AccountMenu username={auth.username} onLogout={onLogout} />}
               <button
                 onClick={() => setMenuOpen(true)}
                 aria-label="Open menu"
@@ -283,4 +285,56 @@ export default function App() {
       />
     </div>
   )
+}
+
+const SIGNED_OUT = { checking: false, authenticated: false, username: null }
+
+// Auth gate. /api/auth/me reports auth_disabled when AUTH_ENABLED is off, in
+// which case we mount the app immediately and no login UI ever appears.
+export default function App() {
+  const [theme, toggle] = useTheme()
+  const [auth, setAuth] = React.useState({ checking: true, authenticated: false, username: null })
+
+  const applyMe = React.useCallback((me) => {
+    setAuth({
+      checking: false,
+      authenticated: !!me?.authenticated,
+      // auth_disabled => no account to show, so no header control either.
+      username: me?.auth_disabled ? null : me?.username || null,
+    })
+  }, [])
+
+  React.useEffect(() => {
+    let alive = true
+    api
+      .authMe()
+      .then((me) => alive && applyMe(me))
+      // The probe only fails when the backend is unreachable; mount the app so
+      // it can surface its own errors. Any protected call will 401 and bounce
+      // back here if auth turns out to be on.
+      .catch(() => alive && applyMe({ authenticated: true, auth_disabled: true }))
+    return () => {
+      alive = false
+    }
+  }, [applyMe])
+
+  React.useEffect(() => {
+    setUnauthorizedHandler(() => setAuth(SIGNED_OUT))
+    return () => setUnauthorizedHandler(null)
+  }, [])
+
+  const logout = async () => {
+    try {
+      await api.logout()
+    } catch {
+      // Already gone server-side; drop the client state either way.
+    }
+    setAuth(SIGNED_OUT)
+  }
+
+  if (auth.checking) return <Spinner />
+  if (!auth.authenticated) {
+    return <LoginPage theme={theme} onToggleTheme={toggle} onSuccess={applyMe} />
+  }
+  return <AppShell theme={theme} toggle={toggle} auth={auth} onLogout={logout} />
 }
