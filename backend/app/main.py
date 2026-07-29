@@ -1857,6 +1857,38 @@ def list_service_logs(maintenance_item_id: int = Query(...)):
     return out
 
 
+def _sync_last_serviced_from_logs(conn, maintenance_item_id: int) -> None:
+    """Recompute maintenance_items.last_serviced_at from active service logs.
+
+    Sets last_serviced_at to the newest serviced_at among non-deleted logs for
+    this item, or NULL if there are none. Due dates derived from
+    last_serviced_at + interval then roll automatically. Called after every
+    service-log create/update/delete.
+
+    NOTE: intentional UX convenience beyond stock micasa, which keeps
+    last_serviced_at and service_log_entries independent.
+    """
+    row = conn.execute(
+        """
+        SELECT MAX(serviced_at) AS newest
+          FROM service_log_entries
+         WHERE maintenance_item_id = ? AND deleted_at IS NULL
+        """,
+        (maintenance_item_id,),
+    ).fetchone()
+    newest = row["newest"] if row else None
+    if newest is not None:
+        newest = str(newest)[:10]
+    conn.execute(
+        """
+        UPDATE maintenance_items
+           SET last_serviced_at = ?, updated_at = ?
+         WHERE id = ? AND deleted_at IS NULL
+        """,
+        (newest, now_utc_str(), maintenance_item_id),
+    )
+
+
 @api.post("/service-logs", status_code=201)
 def create_service_log(payload: ServiceLogCreate):
     """Insert a service_log_entries row. Does NOT update last_serviced_at."""
@@ -1902,8 +1934,7 @@ def create_service_log(payload: ServiceLogCreate):
             (payload.maintenance_item_id, serviced_at, vendor_id, cost_cents, notes, now, now),
         )
         new_id = cur.lastrowid
-        # Intentionally do NOT touch maintenance_items.last_serviced_at
-        # (micasa CreateServiceLog parity).
+        _sync_last_serviced_from_logs(conn, payload.maintenance_item_id)
         conn.commit()
         result = _fetch_service_log_row(conn, new_id)
     except HTTPException:
@@ -1948,12 +1979,13 @@ def update_service_log(log_id: int, payload: ServiceLogUpdate):
     conn = get_write_conn()
     try:
         row = conn.execute(
-            "SELECT id FROM service_log_entries WHERE id = ? AND deleted_at IS NULL",
+            "SELECT id, maintenance_item_id FROM service_log_entries WHERE id = ? AND deleted_at IS NULL",
             (log_id,),
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="service log not found")
 
+        parent_id = row["maintenance_item_id"]
         _require_optional_live_vendor(conn, vendor_id)
 
         conn.execute(
@@ -1965,7 +1997,7 @@ def update_service_log(log_id: int, payload: ServiceLogUpdate):
             """,
             (serviced_at, vendor_id, cost_cents, notes, now, log_id),
         )
-        # Intentionally do NOT touch maintenance_items.last_serviced_at.
+        _sync_last_serviced_from_logs(conn, parent_id)
         conn.commit()
         result = _fetch_service_log_row(conn, log_id)
     except HTTPException:
@@ -1994,7 +2026,7 @@ def delete_service_log(log_id: int):
     conn = get_write_conn()
     try:
         row = conn.execute(
-            "SELECT id FROM service_log_entries WHERE id = ? AND deleted_at IS NULL",
+            "SELECT id, maintenance_item_id FROM service_log_entries WHERE id = ? AND deleted_at IS NULL",
             (log_id,),
         ).fetchone()
         if not row:
@@ -2009,6 +2041,7 @@ def delete_service_log(log_id: int):
             "VALUES ('service_log', ?, ?, NULL)",
             (log_id, now),
         )
+        _sync_last_serviced_from_logs(conn, row["maintenance_item_id"])
         conn.commit()
     except HTTPException:
         conn.rollback()

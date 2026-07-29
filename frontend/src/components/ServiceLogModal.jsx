@@ -10,7 +10,7 @@ const labelClass = 'mb-1 block text-xs font-semibold uppercase tracking-wide tex
 //  - Date serviced REQUIRED (YYYY-MM-DD)
 //  - Performed by optional (live vendor select, or none)
 //  - Cost optional money; Notes optional text
-// Does NOT touch maintenance_items.last_serviced_at (micasa CreateServiceLog parity).
+// Backend syncs maintenance_items.last_serviced_at from the newest active service log.
 export default function ServiceLogModal({
   open,
   entry,                 // existing log => edit; null => create
