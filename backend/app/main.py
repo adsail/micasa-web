@@ -1496,6 +1496,26 @@ class MaintenanceUpdate(BaseModel):
     notes: str | None = None
 
 
+
+class ServiceLogCreate(BaseModel):
+    # Mirrors micasa ServiceLogEntry + forms.go parseServiceLogFormData.
+    # CreateServiceLog inserts a service_log_entries row and optionally
+    # find-or-creates a vendor; it does NOT update maintenance_items.last_serviced_at.
+    maintenance_item_id: int
+    serviced_at: str  # required YYYY-MM-DD
+    vendor_id: int | None = None
+    cost_dollars: float | None = None
+    notes: str | None = None
+
+
+class ServiceLogUpdate(BaseModel):
+    # maintenance_item_id is fixed to the parent item (prefer keep fixed).
+    serviced_at: str  # required YYYY-MM-DD
+    vendor_id: int | None = None
+    cost_dollars: float | None = None
+    notes: str | None = None
+
+
 def _fetch_maintenance_row(conn, item_id):
     """Return a single maintenance item in the SAME shape as GET /api/maintenance."""
     row = conn.execute(
@@ -1747,6 +1767,258 @@ def delete_maintenance(item_id: int):
     finally:
         conn.close()
     return {"ok": True, "id": item_id}
+
+
+# ---------------------------------------------------------------------------
+# SERVICE LOG write endpoints. Mirror micasa v1.52.0 (models.go ServiceLogEntry
+# + store.go CreateServiceLog/UpdateServiceLog/DeleteServiceLog, forms.go
+# openServiceLogForm / parseServiceLogFormData).
+#
+# Fields: maintenance_item_id (required on create, fixed on update), serviced_at
+# (required date), vendor_id (optional, live vendor if set), cost_cents
+# (optional), notes (optional text, blank -> "").
+#
+# STRICT: Create/Update MUST NOT touch maintenance_items.last_serviced_at.
+# Soft-delete entity name for deletion_records: "service_log"
+# (DeletionEntityServiceLog).
+# ---------------------------------------------------------------------------
+def _fetch_service_log_row(conn, log_id):
+    """Return a single service log row with vendor_name + expanded cost."""
+    row = conn.execute(
+        """
+        SELECT s.*, v.name AS vendor_name
+        FROM service_log_entries s
+        LEFT JOIN vendors v ON v.id = s.vendor_id
+        WHERE s.id = ? AND s.deleted_at IS NULL
+        """,
+        (log_id,),
+    ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d = expand_money(d, ["cost_cents"])
+    d["serviced_at"] = to_iso_date(d.get("serviced_at"))
+    return d
+
+
+def _require_live_maintenance_item(conn, item_id):
+    """Reject missing (404) or soft-deleted (400) maintenance items."""
+    if item_id is None:
+        raise HTTPException(status_code=400, detail="maintenance_item_id is required")
+    row = conn.execute(
+        "SELECT id, deleted_at FROM maintenance_items WHERE id = ?", (item_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"maintenance item {item_id} not found")
+    if row["deleted_at"] is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"maintenance item {item_id} is deleted -- restore it first",
+        )
+
+
+def _require_optional_live_vendor(conn, vendor_id):
+    """Vendor is optional on service logs; if provided, must be alive."""
+    if vendor_id is None:
+        return
+    row = conn.execute(
+        "SELECT id, deleted_at FROM vendors WHERE id = ?", (vendor_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"vendor {vendor_id} not found")
+    if row["deleted_at"] is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"vendor {vendor_id} is deleted -- restore it first",
+        )
+
+
+@api.get("/service-logs")
+def list_service_logs(maintenance_item_id: int = Query(...)):
+    """Optional list of active service logs for one maintenance item."""
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT s.*, v.name AS vendor_name
+        FROM service_log_entries s
+        LEFT JOIN vendors v ON v.id = s.vendor_id
+        WHERE s.maintenance_item_id = ? AND s.deleted_at IS NULL
+        ORDER BY s.serviced_at DESC, s.id DESC
+        """,
+        (maintenance_item_id,),
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d = expand_money(d, ["cost_cents"])
+        d["serviced_at"] = to_iso_date(d.get("serviced_at"))
+        out.append(d)
+    return out
+
+
+@api.post("/service-logs", status_code=201)
+def create_service_log(payload: ServiceLogCreate):
+    """Insert a service_log_entries row. Does NOT update last_serviced_at."""
+    if payload.maintenance_item_id is None:
+        raise HTTPException(status_code=400, detail="maintenance_item_id is required")
+    if not (payload.serviced_at or "").strip():
+        raise HTTPException(status_code=400, detail="serviced_at is required")
+
+    try:
+        serviced_at = date_only_str(payload.serviced_at)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="serviced_at must be YYYY-MM-DD")
+    if serviced_at is None:
+        raise HTTPException(status_code=400, detail="serviced_at is required")
+
+    cost_cents = _dollars_to_cents(payload.cost_dollars, "cost_dollars")
+    if cost_cents is not None and cost_cents < 0:
+        raise HTTPException(status_code=400, detail="cost must not be negative")
+
+    # micasa stores notes trimmed; blank -> "" (not NULL).
+    notes = (payload.notes or "").strip()
+    vendor_id = payload.vendor_id
+
+    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
+    try:
+        backup_db()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
+
+    now = now_utc_str()
+    conn = get_write_conn()
+    try:
+        _require_live_maintenance_item(conn, payload.maintenance_item_id)
+        _require_optional_live_vendor(conn, vendor_id)
+
+        cur = conn.execute(
+            """
+            INSERT INTO service_log_entries
+                (maintenance_item_id, serviced_at, vendor_id, cost_cents, notes,
+                 created_at, updated_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (payload.maintenance_item_id, serviced_at, vendor_id, cost_cents, notes, now, now),
+        )
+        new_id = cur.lastrowid
+        # Intentionally do NOT touch maintenance_items.last_serviced_at
+        # (micasa CreateServiceLog parity).
+        conn.commit()
+        result = _fetch_service_log_row(conn, new_id)
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"insert failed: {e}")
+    finally:
+        conn.close()
+    return result
+
+
+@api.put("/service-logs/{log_id}")
+def update_service_log(log_id: int, payload: ServiceLogUpdate):
+    """Update an existing service log. Parent maintenance_item_id stays fixed.
+    Does NOT touch maintenance_items.last_serviced_at."""
+    if not (payload.serviced_at or "").strip():
+        raise HTTPException(status_code=400, detail="serviced_at is required")
+
+    try:
+        serviced_at = date_only_str(payload.serviced_at)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="serviced_at must be YYYY-MM-DD")
+    if serviced_at is None:
+        raise HTTPException(status_code=400, detail="serviced_at is required")
+
+    cost_cents = _dollars_to_cents(payload.cost_dollars, "cost_dollars")
+    if cost_cents is not None and cost_cents < 0:
+        raise HTTPException(status_code=400, detail="cost must not be negative")
+
+    notes = (payload.notes or "").strip()
+    vendor_id = payload.vendor_id
+
+    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
+    try:
+        backup_db()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
+
+    now = now_utc_str()
+    conn = get_write_conn()
+    try:
+        row = conn.execute(
+            "SELECT id FROM service_log_entries WHERE id = ? AND deleted_at IS NULL",
+            (log_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="service log not found")
+
+        _require_optional_live_vendor(conn, vendor_id)
+
+        conn.execute(
+            """
+            UPDATE service_log_entries
+               SET serviced_at = ?, vendor_id = ?, cost_cents = ?, notes = ?,
+                   updated_at = ?
+             WHERE id = ? AND deleted_at IS NULL
+            """,
+            (serviced_at, vendor_id, cost_cents, notes, now, log_id),
+        )
+        # Intentionally do NOT touch maintenance_items.last_serviced_at.
+        conn.commit()
+        result = _fetch_service_log_row(conn, log_id)
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"update failed: {e}")
+    finally:
+        conn.close()
+    return result
+
+
+@api.delete("/service-logs/{log_id}")
+def delete_service_log(log_id: int):
+    """SOFT delete, exactly like micasa's DeleteServiceLog -> softDelete(
+    &ServiceLogEntry{}, DeletionEntityServiceLog, id): set deleted_at and
+    insert a deletion_records row with entity='service_log'."""
+    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
+    try:
+        backup_db()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
+
+    now = now_utc_str()
+    conn = get_write_conn()
+    try:
+        row = conn.execute(
+            "SELECT id FROM service_log_entries WHERE id = ? AND deleted_at IS NULL",
+            (log_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="service log not found")
+
+        conn.execute(
+            "UPDATE service_log_entries SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, log_id),
+        )
+        conn.execute(
+            "INSERT INTO deletion_records (entity, target_id, deleted_at, restored_at) "
+            "VALUES ('service_log', ?, ?, NULL)",
+            (log_id, now),
+        )
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"delete failed: {e}")
+    finally:
+        conn.close()
+    return {"ok": True, "id": log_id}
 
 
 

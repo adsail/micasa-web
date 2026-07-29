@@ -3,6 +3,7 @@ import { api } from '../api'
 import { Card, Spinner, ErrorBox, Empty, SectionTitle, Badge } from './ui'
 import { money, fmtDate } from '../format'
 import MaintenanceModal from './MaintenanceModal'
+import ServiceLogModal from './ServiceLogModal'
 
 const dueBadge = (status) => {
   if (status === 'overdue') return <Badge color="red">Overdue</Badge>
@@ -22,7 +23,9 @@ export default function MaintenanceTab() {
   const [open, setOpen] = React.useState(null)
   const [addOpen, setAddOpen] = React.useState(false)
   const [editItem, setEditItem] = React.useState(null)
+  const [logModal, setLogModal] = React.useState(null) // { itemId, entry? }
   const [toast, setToast] = React.useState(null)
+  const [histKey, setHistKey] = React.useState(0)
 
   const load = React.useCallback(() => {
     return api
@@ -40,6 +43,13 @@ export default function MaintenanceTab() {
     window.clearTimeout(showToast._t)
     showToast._t = window.setTimeout(() => setToast(null), 3000)
   }, [])
+
+  const afterLogChange = React.useCallback(async (msg) => {
+    setLogModal(null)
+    setHistKey((k) => k + 1)
+    await load()
+    showToast(msg)
+  }, [load, showToast])
 
   if (s.loading) return <Spinner />
   if (s.error) return <ErrorBox error={s.error} />
@@ -100,11 +110,29 @@ export default function MaintenanceTab() {
                 <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
                   {m.cost_cents?.cents != null && <span className="text-shale-500">Cost: {money(m.cost_cents)}</span>}
                   {m.manual_url && <a href={m.manual_url} target="_blank" rel="noreferrer" className="text-sienna hover:underline dark:text-cursor-accent">Manual</a>}
+                  <button
+                    onClick={() => setLogModal({ itemId: m.id, entry: null })}
+                    className="font-semibold text-sienna hover:underline dark:text-cursor-accent"
+                  >
+                    Log service
+                  </button>
                   <button onClick={() => setOpen(open === m.id ? null : m.id)} className="font-semibold text-sienna hover:underline dark:text-cursor-accent">
                     {open === m.id ? 'Hide history' : 'Service history'}
                   </button>
                 </div>
-                {open === m.id && <History id={m.id} />}
+                {open === m.id && (
+                  <History
+                    key={`${m.id}-${histKey}`}
+                    id={m.id}
+                    onAdd={() => setLogModal({ itemId: m.id, entry: null })}
+                    onEdit={(entry) => setLogModal({ itemId: m.id, entry })}
+                    onDeleted={async () => {
+                      setHistKey((k) => k + 1)
+                      await load()
+                      showToast('Service log deleted')
+                    }}
+                  />
+                )}
               </Card>
             ))}
           </div>
@@ -138,6 +166,19 @@ export default function MaintenanceTab() {
         }}
       />
 
+      <ServiceLogModal
+        open={!!logModal}
+        entry={logModal?.entry || null}
+        maintenanceItemId={logModal?.itemId}
+        onClose={() => setLogModal(null)}
+        onSaved={async () => {
+          await afterLogChange(logModal?.entry ? 'Service log saved' : 'Service logged')
+        }}
+        onDeleted={async () => {
+          await afterLogChange('Service log deleted')
+        }}
+      />
+
       {toast && (
         <div
           className={`fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-xl px-4 py-2.5 text-sm font-semibold shadow-lg ${
@@ -153,28 +194,98 @@ export default function MaintenanceTab() {
   )
 }
 
-function History({ id }) {
+function History({ id, onAdd, onEdit, onDeleted }) {
   const [s, setS] = React.useState({ loading: true })
+  const [confirmId, setConfirmId] = React.useState(null)
+  const [deleting, setDeleting] = React.useState(false)
+
   React.useEffect(() => {
     api.maintenanceItem(id).then((data) => setS({ loading: false, data })).catch((error) => setS({ loading: false, error }))
   }, [id])
+
+  const doDelete = async (entryId) => {
+    if (deleting) return
+    setDeleting(true)
+    try {
+      await api.deleteServiceLog(entryId)
+      setConfirmId(null)
+      await onDeleted?.(entryId)
+    } catch (err) {
+      setS((prev) => ({ ...prev, error: err }))
+      setDeleting(false)
+      setConfirmId(null)
+    }
+  }
+
   if (s.loading) return <div className="py-3"><Spinner /></div>
   if (s.error) return <ErrorBox error={s.error} />
   const log = s.data?.service_log || []
-  if (!log.length) return <p className="mt-3 border-t border-calm pt-3 text-sm text-shale-500 dark:border-cursor-border">No service history recorded.</p>
+
   return (
     <div className="mt-3 border-t border-calm pt-3 dark:border-cursor-border">
-      <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-shale-500">Service History</h4>
-      <ul className="space-y-2">
-        {log.map((e) => (
-          <li key={e.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
-            <span className="font-medium">{fmtDate(e.serviced_at)}</span>
-            <span className="text-shale-600">{e.vendor_name || '—'}</span>
-            <span className="font-semibold">{money(e.cost_cents)}</span>
-            {e.notes && <span className="w-full text-xs text-shale-500">{e.notes}</span>}
-          </li>
-        ))}
-      </ul>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h4 className="text-xs font-bold uppercase tracking-wide text-shale-500">Service History</h4>
+        <button
+          onClick={onAdd}
+          className="text-xs font-semibold text-sienna hover:underline dark:text-cursor-accent"
+        >
+          + Log service
+        </button>
+      </div>
+      {!log.length ? (
+        <p className="text-sm text-shale-500">No service history recorded.</p>
+      ) : (
+        <ul className="space-y-2">
+          {log.map((e) => (
+            <li key={e.id} className="rounded-lg border border-transparent px-2 py-1.5 hover:border-calm hover:bg-calm-50 dark:hover:border-cursor-border dark:hover:bg-cursor-elevated/40">
+              {confirmId === e.id ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="font-semibold text-red-700 dark:text-red-300">Delete this service log?</span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmId(null)}
+                      disabled={deleting}
+                      className="rounded-lg px-2 py-1 text-xs font-semibold text-chocolate hover:bg-calm disabled:opacity-50 dark:text-cursor-text"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => doDelete(e.id)}
+                      disabled={deleting}
+                      className="rounded-lg bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+                    >
+                      {deleting ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <button
+                    type="button"
+                    onClick={() => onEdit?.(e)}
+                    title="Click to edit"
+                    className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-left"
+                  >
+                    <span className="font-medium">{fmtDate(e.serviced_at)}</span>
+                    <span className="text-shale-600">{e.vendor_name || '—'}</span>
+                    <span className="font-semibold">{money(e.cost_cents)}</span>
+                    {e.notes && <span className="w-full text-xs text-shale-500">{e.notes}</span>}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmId(e.id)}
+                    className="shrink-0 text-xs font-semibold text-red-600 hover:underline dark:text-red-400"
+                  >
+                    Delete
+                  </button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
