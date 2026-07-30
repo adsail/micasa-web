@@ -1,0 +1,27 @@
+# Sample TLS reverse proxy for micasa-web.
+#
+# The app sets Secure session cookies, so it MUST be reached over HTTPS when
+# exposed to the internet. Caddy provisions and renews a Let's Encrypt
+# certificate automatically; point the domain below at this host, put the
+# container on 127.0.0.1 only, and run `caddy run --config deploy/Caddyfile`.
+#
+# Alternatives that work just as well: a Cloudflare Tunnel (`cloudflared`),
+# which terminates TLS at Cloudflare and needs no inbound ports at all, or
+# nginx/Traefik with your own certificate. Whatever you use, terminate TLS in
+# front of micasa-web and keep AUTH_COOKIE_SECURE=true.
+
+micasa.example.com {
+	encode zstd gzip
+
+	# X-Forwarded-For lets uvicorn report real client IPs, which is what the
+	# login rate limiter keys on. Uvicorn only trusts those headers from hosts
+	# listed in FORWARDED_ALLOW_IPS.
+	reverse_proxy 127.0.0.1:8282
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}

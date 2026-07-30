@@ -1,18 +1,46 @@
 const base = ''
 
+// Set by App so an expired session mid-use bounces back to the login screen.
+// The /auth/* routes opt out: a 401 there is the login form's own business.
+let unauthorizedHandler = null
+
+export function setUnauthorizedHandler(fn) {
+  unauthorizedHandler = fn
+}
+
+function onUnauthorized(path) {
+  if (path.startsWith('/auth/')) return
+  unauthorizedHandler?.()
+}
+
+// Double-submit CSRF: the backend sets a readable csrf_token cookie at login
+// and requires the same value back in a header on every mutation. There is no
+// cookie when AUTH_ENABLED is off, and the backend skips the check then too.
+function csrfToken() {
+  const m = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/)
+  return m ? decodeURIComponent(m[1]) : ''
+}
+
 async function get(path) {
   const res = await fetch(`${base}/api${path}`)
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  if (!res.ok) {
+    if (res.status === 401) onUnauthorized(path)
+    throw new Error(`${res.status} ${res.statusText}`)
+  }
   return res.json()
 }
 
 async function mutate(method, path, body) {
+  const headers = { 'Content-Type': 'application/json' }
+  const token = csrfToken()
+  if (token) headers['X-CSRF-Token'] = token
   const res = await fetch(`${base}/api${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: body == null ? undefined : JSON.stringify(body),
   })
   if (!res.ok) {
+    if (res.status === 401) onUnauthorized(path)
     let detail = `${res.status} ${res.statusText}`
     try {
       const j = await res.json()
@@ -24,6 +52,9 @@ async function mutate(method, path, body) {
 }
 
 export const api = {
+  authMe: () => get('/auth/me'),
+  login: (username, password) => mutate('POST', '/auth/login', { username, password }),
+  logout: () => mutate('POST', '/auth/logout'),
   health: () => get('/health'),
   house: () => get('/house'),
   projects: () => get('/projects'),

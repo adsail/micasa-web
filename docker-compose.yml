@@ -20,3 +20,18 @@ services:
     environment:
       - STATIC_DIR=/app/static
       - OPEX_ENABLED=${OPEX_ENABLED:-false}
+      # Optional single-account login. OFF by default: with AUTH_ENABLED=false
+      # the app behaves exactly as it always has (no login, no cookies), which
+      # is the right setting for a trusted LAN.
+      #
+      # Turning it on REQUIRES AUTH_PASSWORD_HASH (bcrypt; `python -m app.hashpw`)
+      # and AUTH_SECRET (>= 32 chars; `openssl rand -hex 32`) or the app refuses
+      # to start. Supply them from your shell env or an untracked .env file --
+      # never commit a real hash or secret. Secure cookies mean the app must sit
+      # behind TLS when exposed (see deploy/Caddyfile).
+      - AUTH_ENABLED=${AUTH_ENABLED:-false}
+      - AUTH_USERNAME=${AUTH_USERNAME:-admin}
+      - AUTH_PASSWORD_HASH=${AUTH_PASSWORD_HASH:-}
+      - AUTH_SECRET=${AUTH_SECRET:-}
+      - AUTH_SESSION_DAYS=${AUTH_SESSION_DAYS:-7}
+      - AUTH_COOKIE_SECURE=${AUTH_COOKIE_SECURE:-true}
