@@ -11,11 +11,13 @@ import AppliancesTab from './components/AppliancesTab'
 import VendorsTab from './components/VendorsTab'
 import DocsTab from './components/DocsTab'
 import OpExTab from './components/OpExTab'
+import ProgramsTab from './components/ProgramsTab'
 import MobileMenu from './components/MobileMenu'
 
-const TABS = [
+const ALL_TABS = [
   { id: 'house', label: 'House', C: HouseTab },
   { id: 'projects', label: 'Projects', C: ProjectsTab },
+  { id: 'programs', label: 'Programs', C: ProgramsTab },
   { id: 'quotes', label: 'Quotes', C: QuotesTab },
   { id: 'maintenance', label: 'Maintenance', C: MaintenanceTab },
   { id: 'incidents', label: 'Incidents', C: IncidentsTab },
@@ -198,9 +200,15 @@ export default function App() {
   const [theme, toggle] = useTheme()
   const [active, setActive] = React.useState(() => {
     const h = window.location.hash.replace('#', '')
-    return TABS.some((t) => t.id === h) ? h : 'house'
+    return ALL_TABS.some((t) => t.id === h) ? h : 'house'
   })
   const houseState = useAsync(() => api.house(), [])
+  const healthState = useAsync(() => api.health(), [])
+  const programsEnabled = healthState.data?.programs_enabled === true
+  const TABS = React.useMemo(
+    () => ALL_TABS.filter((t) => t.id !== 'programs' || programsEnabled),
+    [programsEnabled]
+  )
   const [drawerOpen, setDrawerOpen] = React.useState(false)
   const [menuOpen, setMenuOpen] = React.useState(false)
   const overdueState = useAsync(() => api.maintenanceOverdue(), [])
@@ -209,6 +217,11 @@ export default function App() {
   React.useEffect(() => {
     window.location.hash = active
   }, [active])
+
+  React.useEffect(() => {
+    if (healthState.loading) return
+    if (active === 'programs' && !programsEnabled) setActive('house')
+  }, [healthState.loading, programsEnabled, active])
 
   const gotoMaintenance = () => {
     setDrawerOpen(false)

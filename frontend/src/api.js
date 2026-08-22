@@ -64,4 +64,11 @@ export const api = {
   docRaw: (id) => `${base}/api/documents/${id}/raw`,
   opexSummary: (period) => get(`/opex/summary?period=${encodeURIComponent(period)}`),
   opexSeries: () => get("/opex/series"),
+  programs: () => get('/programs'),
+  program: (id) => get(`/programs/${id}`),
+  createProgram: (body) => mutate('POST', '/programs', body),
+  updateProgram: (id, body) => mutate('PUT', `/programs/${id}`, body),
+  deleteProgram: (id) => mutate('DELETE', `/programs/${id}`),
+  addProgramProject: (id, body) => mutate('POST', `/programs/${id}/projects`, body),
+  removeProgramProject: (id, projectId) => mutate('DELETE', `/programs/${id}/projects/${projectId}`),
 }

@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -19,9 +20,19 @@ from .db import (
     today_utc_date_str,
     date_only_str,
     get_opex_conn,
+    init_programs_db,
+    is_programs_available,
 )
+from .programs import router as programs_router
 
-app = FastAPI(title="micasa web", description="Read-only micasa home-maintenance API")
+
+@asynccontextmanager
+async def _lifespan(_app):
+    init_programs_db()
+    yield
+
+
+app = FastAPI(title="micasa web", description="Read-only micasa home-maintenance API", lifespan=_lifespan)
 
 api = FastAPI(title="micasa API")
 
@@ -130,7 +141,12 @@ def health():
         except Exception:
             readonly = True
         conn.close()
-        return {"status": "healthy", "db": "ok", "read_only": readonly}
+        return {
+            "status": "healthy",
+            "db": "ok",
+            "read_only": readonly,
+            "programs_enabled": is_programs_available(),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"unhealthy: {e}")
 
@@ -2547,6 +2563,11 @@ def opex_series():
         "categories": categories,
         "pulled_at": pulled,
     }
+
+
+# Web-only Programs layer (separate sqlite). 404s when PROGRAMS_ENABLED is
+# false or the programs DB cannot be created — see db.is_programs_available.
+api.include_router(programs_router)
 
 
 # Mount the API under /api
