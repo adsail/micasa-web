@@ -30,12 +30,6 @@ function remainingClass(m) {
   return 'text-chocolate dark:text-cursor-text'
 }
 
-function spendCents(p) {
-  const actual = centsOf(p.actual_cents)
-  if (actual != null) return actual
-  return centsOf(p.quoted_cents) || 0
-}
-
 function ProgressBar({ budget, spend }) {
   const b = centsOf(budget)
   const s = spend == null ? 0 : spend
