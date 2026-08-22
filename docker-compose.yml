@@ -17,6 +17,11 @@ services:
       # Optional: OpEx snapshot DB (separate from micasa), mounted read-only.
       # Only used when OPEX_ENABLED=true. Safe to leave; dir is created if set.
       - ${OPEX_DATA_DIR:-/home/pi/opex}:/data/opex:ro
+      # Web-only Programs DB (group micasa project IDs + budget rollup).
+      # Separate from micasa.db. Read-write so the UI can create programs.
+      - ${PROGRAMS_DATA_DIR:-/home/pi/programs}:/data/programs
     environment:
       - STATIC_DIR=/app/static
       - OPEX_ENABLED=${OPEX_ENABLED:-false}
+      - PROGRAMS_ENABLED=${PROGRAMS_ENABLED:-true}
+      - PROGRAMS_DB_PATH=${PROGRAMS_DB_PATH:-/data/programs/programs.db}

@@ -1,6 +1,9 @@
+import logging
 import os
 import sqlite3
 from datetime import datetime, date, timezone
+
+log = logging.getLogger(__name__)
 
 DB_PATH = "/data/micasa.db"
 BACKUP_DIR = "/data/backups"
@@ -185,4 +188,113 @@ def get_opex_conn():
     conn = sqlite3.connect(f"file:{OPEX_DB_PATH}?mode=ro", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA query_only=ON")
+    return conn
+
+
+# ---------------------------------------------------------------------------
+# Programs DB (web-only grouping layer, separate from micasa.db).
+# Groups existing micasa project IDs into "programs" for budget rollups.
+# Does NOT change micasa schema or project semantics.
+# ---------------------------------------------------------------------------
+PROGRAMS_DB_PATH_DEFAULT = "/data/programs/programs.db"
+
+_PROGRAMS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS programs (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS program_projects (
+    id INTEGER PRIMARY KEY,
+    program_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    deleted_at TEXT,
+    FOREIGN KEY (program_id) REFERENCES programs(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_program_projects_live
+    ON program_projects(program_id, project_id)
+    WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_program_projects_program
+    ON program_projects(program_id);
+"""
+
+_initialized_program_paths = set()
+
+
+def _env_truthy(name, default=None):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def programs_db_path():
+    return os.environ.get("PROGRAMS_DB_PATH", PROGRAMS_DB_PATH_DEFAULT)
+
+
+def programs_feature_on():
+    """PROGRAMS_ENABLED: default true when a DB path is configured (the
+    built-in default counts), else false. Explicit env wins."""
+    explicit = _env_truthy("PROGRAMS_ENABLED")
+    if explicit is not None:
+        return explicit
+    return bool(programs_db_path())
+
+
+def init_programs_db():
+    """Create the programs DB file + schema if the feature is on.
+
+    Returns True when the DB is usable. Failures (unwritable path, etc.)
+    return False so local/unauthenticated use still boots without Programs.
+    """
+    if not programs_feature_on():
+        return False
+    path = programs_db_path()
+    if path in _initialized_program_paths and os.path.exists(path):
+        return True
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript(_PROGRAMS_SCHEMA)
+            conn.commit()
+        finally:
+            conn.close()
+        _initialized_program_paths.add(path)
+        return True
+    except OSError as e:
+        log.warning("programs DB unavailable at %s: %s", path, e)
+        return False
+
+
+def is_programs_available():
+    """True when PROGRAMS_ENABLED and the programs DB can be opened/created.
+
+    Used by /api/health (`programs_enabled`) and as the gate for /api/programs*.
+    Mirrors OpEx's "missing snapshot → degrade" idea, except Programs is a
+    writeable module so a disabled/unusable DB yields 404s instead of empty
+    rollups.
+    """
+    return init_programs_db()
+
+
+def get_programs_conn():
+    """Open a read-write connection to the programs DB. Returns None when
+    the feature is off or the DB cannot be created."""
+    if not is_programs_available():
+        return None
+    conn = sqlite3.connect(programs_db_path(), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
