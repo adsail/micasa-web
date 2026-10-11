@@ -179,6 +179,12 @@ def add_months(d, months):
 OPEX_DB_PATH = "/data/opex/opex.db"
 
 
+def opex_feature_on():
+    """OPEX_ENABLED: default false. Gates /api/opex/* and, via /api/health,
+    the Home OpEx tab."""
+    return _env_truthy("OPEX_ENABLED", False)
+
+
 def get_opex_conn():
     """Open the OpEx snapshot DB strictly read-only. Returns None if the DB
     file does not exist yet (no snapshot has been pushed), so endpoints can

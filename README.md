@@ -39,7 +39,7 @@ Then open http://localhost:8282.
 |---|---|---|
 | `MICASA_DATA_DIR` | `/home/pi/micasa` | Host dir bind-mounted to `/data`; must contain `micasa.db`. Backups are written to `<dir>/backups`. |
 | `PORT` | `8282` | Host port. |
-| `OPEX_ENABLED` | `false` | Enables the optional Home OpEx tab + `/api/opex/*`. |
+| `OPEX_ENABLED` | `false` | Enables the optional Home OpEx tab + `/api/opex/*`. When off, `/api/opex/*` return **404** and the tab is hidden; `/api/health` reports `opex_enabled` so the frontend knows whether to show it. |
 | `PROGRAMS_ENABLED` | `true` | Enables the Programs tab + `/api/programs/*`. Defaults on when `PROGRAMS_DB_PATH` is set (including the built-in default). Set `false` to hide the tab. If the programs DB cannot be created, `/api/health` reports `programs_enabled: false` and the tab is hidden. |
 | `PROGRAMS_DB_PATH` | `/data/programs/programs.db` | Path **inside the container** to the programs sqlite file (not `micasa.db`). |
 | `PROGRAMS_DATA_DIR` | `/home/pi/programs` | Host dir bind-mounted read-write to `/data/programs`. |

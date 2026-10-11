@@ -205,9 +205,13 @@ export default function App() {
   const houseState = useAsync(() => api.house(), [])
   const healthState = useAsync(() => api.health(), [])
   const programsEnabled = healthState.data?.programs_enabled === true
+  const opexEnabled = healthState.data?.opex_enabled === true
   const TABS = React.useMemo(
-    () => ALL_TABS.filter((t) => t.id !== 'programs' || programsEnabled),
-    [programsEnabled]
+    () =>
+      ALL_TABS.filter(
+        (t) => (t.id !== 'programs' || programsEnabled) && (t.id !== 'opex' || opexEnabled)
+      ),
+    [programsEnabled, opexEnabled]
   )
   const [drawerOpen, setDrawerOpen] = React.useState(false)
   const [menuOpen, setMenuOpen] = React.useState(false)
@@ -221,7 +225,8 @@ export default function App() {
   React.useEffect(() => {
     if (healthState.loading) return
     if (active === 'programs' && !programsEnabled) setActive('house')
-  }, [healthState.loading, programsEnabled, active])
+    if (active === 'opex' && !opexEnabled) setActive('house')
+  }, [healthState.loading, programsEnabled, opexEnabled, active])
 
   const gotoMaintenance = () => {
     setDrawerOpen(false)
