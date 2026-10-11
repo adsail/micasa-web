@@ -7,14 +7,25 @@ does not invent parent/child project semantics.
 Remaining vs budget
 -------------------
 Per live (non-deleted) child project:
-    spend = actual_cents if actual_cents is not NULL else quoted_cents
     quoted_cents = SUM(quotes.total_cents) WHERE quotes.deleted_at IS NULL
+    paid = actual_cents or 0
+    projected = spend = max(quoted, paid)
     remaining = budget_cents - spend
-Program totals sum those per-project figures (null budgets/actuals ignored
-in their own sums; spend uses 0 when both actual and quoted are missing).
+    variance = spend - budget_cents
+
+`max(quoted, paid)` is paid plus any unpaid quote (not COALESCE(actual, quoted)).
+COALESCE treated a recorded payment as the final cost and dropped a larger
+quote, so program spend undercounted deposits against still-open quotes.
+
+Program totals sum those per-project figures (null budgets ignored in the
+budget sum; spend uses 0 when both paid and quoted are missing).
 
 Abandoned and completed projects still roll up (they are real costs). Soft-
 deleted micasa projects are excluded.
+
+budget_status: no_budget (budget is null), over_budget (projected > budget),
+at_risk (projected is at least 90% of a positive budget), else on_track.
+A $0 budget is intentional; any positive projected spend is over_budget.
 """
 
 from fastapi import APIRouter, HTTPException
@@ -47,6 +58,56 @@ def _money(cents):
     return {"cents": int(cents), "dollars": round(int(cents) / 100.0, 2)}
 
 
+def _as_cents(value):
+    return 0 if value is None else int(value)
+
+
+def project_projected(actual_cents, quoted_cents):
+    """Committed / projected final for one project: max(quoted, paid).
+
+    A missing paid or quote is 0. This equals paid plus remaining quote, and
+    stays at paid when paid already exceeds the quote.
+    """
+    return max(_as_cents(actual_cents), _as_cents(quoted_cents))
+
+
+AT_RISK_PCT = 90
+
+
+def budget_status(budget_cents, projected_cents):
+    if budget_cents is None:
+        return "no_budget"
+    budget = int(budget_cents)
+    projected = _as_cents(projected_cents)
+    if projected > budget:
+        return "over_budget"
+    if budget > 0 and projected * 100 >= budget * AT_RISK_PCT:
+        return "at_risk"
+    return "on_track"
+
+
+def variance_pct(budget_cents, variance_cents):
+    """(projected - budget) / budget * 100. None when budget is missing or 0."""
+    if budget_cents is None or int(budget_cents) == 0 or variance_cents is None:
+        return None
+    return round(int(variance_cents) / int(budget_cents) * 100.0, 1)
+
+
+def project_trend(budget_cents, actual_cents, quoted_cents):
+    """Per-project (or rolled-up) spend, projection, variance, and status."""
+    projected = project_projected(actual_cents, quoted_cents)
+    remaining = (int(budget_cents) - projected) if budget_cents is not None else None
+    variance = (projected - int(budget_cents)) if budget_cents is not None else None
+    return {
+        "spend_cents": projected,
+        "projected_cents": projected,
+        "remaining_vs_budget_cents": remaining,
+        "variance_vs_budget_cents": variance,
+        "variance_vs_budget_pct": variance_pct(budget_cents, variance),
+        "budget_status": budget_status(budget_cents, projected),
+    }
+
+
 def _require_programs():
     if not is_programs_available():
         raise HTTPException(status_code=404, detail="programs disabled")
@@ -60,27 +121,33 @@ def compute_rollup(projects):
     """Roll up a list of per-project money dicts.
 
     Each item may have budget_cents, actual_cents, quoted_cents (ints or None).
-    spend per row = actual if actual is not None else (quoted or 0).
+    spend / projected per row = max(quoted or 0, paid or 0).
     """
     budget_sum = 0
     quoted_sum = 0
     actual_sum = 0
     spend_sum = 0
     has_actual = False
+    has_budget = False
     for p in projects:
         budget = p.get("budget_cents")
         actual = p.get("actual_cents")
-        quoted = p.get("quoted_cents") or 0
+        quoted = p.get("quoted_cents")
         if budget is not None:
             budget_sum += int(budget)
+            has_budget = True
         if quoted:
             quoted_sum += int(quoted)
         if actual is not None:
             actual_sum += int(actual)
             has_actual = True
-            spend_sum += int(actual)
-        else:
-            spend_sum += int(quoted)
+        spend_sum += project_projected(actual, quoted)
+    # budget_cents stays a numeric sum (0 when no child set a budget) so
+    # existing clients keep seeing a money object. Status is no_budget only
+    # when every child budget is null. A stored $0 budget is intentional.
+    program_budget = budget_sum if has_budget else None
+    remaining = (program_budget - spend_sum) if program_budget is not None else None
+    variance = (spend_sum - program_budget) if program_budget is not None else None
     return {
         "project_count": len(projects),
         "budget_cents": budget_sum,
@@ -88,7 +155,11 @@ def compute_rollup(projects):
         "accepted_quote_cents": quoted_sum,
         "actual_cents": actual_sum,
         "spend_cents": spend_sum,
-        "remaining_vs_budget_cents": budget_sum - spend_sum,
+        "projected_cents": spend_sum,
+        "remaining_vs_budget_cents": remaining,
+        "variance_vs_budget_cents": variance,
+        "variance_vs_budget_pct": variance_pct(program_budget, variance),
+        "budget_status": budget_status(program_budget, spend_sum),
         "has_actuals": has_actual,
     }
 
@@ -97,6 +168,8 @@ def _expand_rollup(rollup):
     out = {
         "project_count": rollup["project_count"],
         "has_actuals": rollup["has_actuals"],
+        "budget_status": rollup["budget_status"],
+        "variance_vs_budget_pct": rollup["variance_vs_budget_pct"],
     }
     for key in (
         "budget_cents",
@@ -104,7 +177,9 @@ def _expand_rollup(rollup):
         "accepted_quote_cents",
         "actual_cents",
         "spend_cents",
+        "projected_cents",
         "remaining_vs_budget_cents",
+        "variance_vs_budget_cents",
     ):
         out[key] = _money(rollup[key])
     return out
@@ -198,8 +273,7 @@ def _serialize_project_row(link, proj):
     budget = proj.get("budget_cents")
     actual = proj.get("actual_cents")
     quoted = proj.get("quoted_cents") or 0
-    spend = int(actual) if actual is not None else int(quoted)
-    remaining = (int(budget) - spend) if budget is not None else None
+    trend = project_trend(budget, actual, quoted)
     return {
         "id": link["id"],
         "project_id": int(link["project_id"]),
@@ -211,7 +285,12 @@ def _serialize_project_row(link, proj):
         "budget_cents": _money(budget),
         "quoted_cents": _money(quoted),
         "actual_cents": _money(actual),
-        "remaining_vs_budget_cents": _money(remaining),
+        "spend_cents": _money(trend["spend_cents"]),
+        "projected_cents": _money(trend["projected_cents"]),
+        "remaining_vs_budget_cents": _money(trend["remaining_vs_budget_cents"]),
+        "variance_vs_budget_cents": _money(trend["variance_vs_budget_cents"]),
+        "variance_vs_budget_pct": trend["variance_vs_budget_pct"],
+        "budget_status": trend["budget_status"],
     }
 
 

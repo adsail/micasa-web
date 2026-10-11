@@ -1,7 +1,8 @@
 import React from 'react'
 import { api } from '../api'
 import { Card, Spinner, ErrorBox, Empty, SectionTitle, Badge, Modal, Stat } from './ui'
-import { money } from '../format'
+import { money, moneySigned, pctSigned } from '../format'
+import { BudgetBar, BudgetLegend, STATUS_META } from './BudgetBar'
 
 const STATUS_COLOR = {
   completed: 'green',
@@ -30,25 +31,17 @@ function remainingClass(m) {
   return 'text-chocolate dark:text-cursor-text'
 }
 
-function ProgressBar({ budget, spend }) {
-  const b = centsOf(budget)
-  const s = spend == null ? 0 : spend
-  if (b == null || b <= 0) return null
-  const pct = Math.min(100, Math.round((s / b) * 100))
-  const over = s > b
-  return (
-    <div>
-      <div className="flex h-2 w-full overflow-hidden rounded-full bg-calm dark:bg-cursor-elevated">
-        <div
-          className={`h-full ${over ? 'bg-red-500' : 'bg-sienna dark:bg-cursor-accent'}`}
-          style={{ width: `${over ? 100 : pct}%` }}
-        />
-      </div>
-      <div className="mt-1 text-[11px] text-shale-500 dark:text-cursor-muted">
-        {over ? `${Math.round((s / b) * 100)}% of budget` : `${pct}% of budget`}
-      </div>
-    </div>
-  )
+function varianceClass(m) {
+  const n = centsOf(m)
+  if (n == null) return 'text-chocolate dark:text-cursor-text'
+  if (n > 0) return 'text-red-600 dark:text-red-300'
+  if (n < 0) return 'text-emerald-700 dark:text-emerald-300'
+  return 'text-chocolate dark:text-cursor-text'
+}
+
+function StatusBadge({ status }) {
+  const meta = STATUS_META[status] || STATUS_META.no_budget
+  return <Badge color={meta.color}>{meta.label}</Badge>
 }
 
 function MoneyRow({ label, value, emphasize, title }) {
@@ -139,7 +132,8 @@ export default function ProgramsTab() {
 
       <p className="mb-5 text-sm text-shale-500 dark:text-cursor-muted">
         Group existing projects into a larger effort and track budget vs quotes vs paid.
-        Remaining = budget minus paid (or quoted when a project has no paid amount yet).
+        Projected is the larger of quoted and paid on each project, then summed.
+        Remaining is budget minus that projection.
       </p>
 
       {!s.data?.length ? (
@@ -160,23 +154,30 @@ export default function ProgramsTab() {
                       <p className="mt-1 line-clamp-2 text-sm text-shale-600 dark:text-cursor-muted">{p.description}</p>
                     )}
                   </div>
-                  <Badge color="violet">
-                    {p.project_count} project{p.project_count === 1 ? '' : 's'}
-                  </Badge>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <StatusBadge status={p.budget_status} />
+                    <Badge color="violet">
+                      {p.project_count} project{p.project_count === 1 ? '' : 's'}
+                    </Badge>
+                  </div>
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <MoneyRow label="Budget" value={p.budget_cents} />
                   <MoneyRow label="Quoted" value={p.quoted_cents} />
                   <MoneyRow label="Paid" value={p.actual_cents} title="Amount paid so far" />
                   <MoneyRow
-                    label="Remaining"
-                    value={p.remaining_vs_budget_cents}
-                    emphasize
-                    title="Budget minus paid, or quoted when nothing has been paid yet"
+                    label="Projected"
+                    value={p.projected_cents ?? p.spend_cents}
+                    title="Larger of quoted and paid on each project, then summed"
                   />
                 </div>
                 <div className="mt-4">
-                  <ProgressBar budget={p.budget_cents} spend={centsOf(p.spend_cents)} />
+                  <BudgetBar
+                    budget={p.budget_cents}
+                    quoted={p.quoted_cents}
+                    paid={p.actual_cents}
+                    compact
+                  />
                 </div>
               </Card>
             </button>
@@ -292,16 +293,36 @@ function ProgramDetail({ id, onBack, onEdit, onDeleted, onToast }) {
 
       <Card className="overflow-hidden">
         <div className="bg-gradient-to-r from-calm-50 to-white p-6 dark:from-cursor-surface dark:to-cursor-surface">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-shale-500 dark:text-cursor-muted">
-            Budget tracker
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-shale-500 dark:text-cursor-muted">
+              Budget tracker
+            </div>
+            <StatusBadge status={d.budget_status} />
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
             <Stat label="Budget" value={money(d.budget_cents)} />
             <Stat label="Quoted" value={money(d.quoted_cents)} />
             <Stat label="Paid" value={money(d.actual_cents)} title="Amount paid so far" />
+            <Stat
+              label="Projected"
+              value={money(d.projected_cents ?? d.spend_cents)}
+              title="Larger of quoted and paid on each project, then summed"
+            />
             <div
               className="flex flex-col"
-              title="Budget minus paid, or quoted when nothing has been paid yet"
+              title="Projected minus budget. Positive means over budget."
+            >
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-shale-500 dark:text-cursor-muted">
+                Variance
+              </span>
+              <span className={`text-sm font-semibold ${varianceClass(d.variance_vs_budget_cents)}`}>
+                {moneySigned(d.variance_vs_budget_cents)}
+              </span>
+              <span className="text-xs text-shale-500">{pctSigned(d.variance_vs_budget_pct)} vs budget</span>
+            </div>
+            <div
+              className="flex flex-col"
+              title="Budget minus projected (larger of quoted and paid per project)"
             >
               <span className="text-[11px] font-semibold uppercase tracking-wide text-shale-500 dark:text-cursor-muted">
                 Remaining
@@ -309,11 +330,12 @@ function ProgramDetail({ id, onBack, onEdit, onDeleted, onToast }) {
               <span className={`text-sm font-semibold ${remainingClass(d.remaining_vs_budget_cents)}`}>
                 {money(d.remaining_vs_budget_cents)}
               </span>
-              <span className="text-xs text-shale-500">budget minus paid or quoted</span>
+              <span className="text-xs text-shale-500">budget minus projected</span>
             </div>
           </div>
           <div className="mt-5">
-            <ProgressBar budget={d.budget_cents} spend={centsOf(d.spend_cents)} />
+            <BudgetBar budget={d.budget_cents} quoted={d.quoted_cents} paid={d.actual_cents} />
+            <BudgetLegend className="mt-3" />
           </div>
         </div>
       </Card>
@@ -323,55 +345,77 @@ function ProgramDetail({ id, onBack, onEdit, onDeleted, onToast }) {
         {!projects.length ? (
           <Empty>No live projects in this program.</Empty>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs uppercase text-shale-500">
-                  <th className="py-1 pr-3">Project</th>
-                  <th className="py-1 pr-3">Status</th>
-                  <th className="py-1 pr-3 text-right">Budget</th>
-                  <th className="py-1 pr-3 text-right">Quoted</th>
-                  <th className="py-1 pr-3 text-right" title="Amount paid so far">Paid</th>
-                  <th className="py-1 pr-3 text-right">Variance</th>
-                  <th className="py-1 text-right"> </th>
-                </tr>
-              </thead>
-              <tbody>
-                {projects.map((p) => {
-                  const abandoned = (p.status || '').toLowerCase() === 'abandoned'
-                  return (
-                    <tr
-                      key={p.project_id}
-                      className={`border-t border-calm dark:border-cursor-border ${abandoned ? 'opacity-60' : ''}`}
-                    >
-                      <td className={`py-2 pr-3 font-medium ${abandoned ? 'line-through' : ''}`}>
-                        {p.title || `Project #${p.project_id}`}
-                      </td>
-                      <td className="py-2 pr-3">
-                        <Badge color={STATUS_COLOR[(p.status || '').toLowerCase()] || 'slate'}>
-                          {(p.status || 'unknown').replace(/_/g, ' ')}
-                        </Badge>
-                      </td>
-                      <td className="py-2 pr-3 text-right">{money(p.budget_cents)}</td>
-                      <td className="py-2 pr-3 text-right">{money(p.quoted_cents)}</td>
-                      <td className="py-2 pr-3 text-right">{money(p.actual_cents)}</td>
-                      <td className={`py-2 pr-3 text-right font-semibold ${remainingClass(p.remaining_vs_budget_cents)}`}>
-                        {money(p.remaining_vs_budget_cents)}
-                      </td>
-                      <td className="py-2 text-right">
-                        <button
-                          onClick={() => unlink(p.project_id, p.title)}
-                          className="text-xs font-semibold text-red-600 hover:underline dark:text-red-400"
-                        >
-                          Unlink
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div className="space-y-3 md:hidden">
+              {projects.map((p) => (
+                <ProjectBudgetCard key={p.project_id} p={p} onUnlink={unlink} />
+              ))}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase text-shale-500">
+                    <th className="py-1 pr-3">Project</th>
+                    <th className="py-1 pr-3">Status</th>
+                    <th className="py-1 pr-3 min-w-[8rem]">Trend</th>
+                    <th className="py-1 pr-3 text-right">Budget</th>
+                    <th className="py-1 pr-3 text-right">Quoted</th>
+                    <th className="py-1 pr-3 text-right" title="Amount paid so far">Paid</th>
+                    <th className="py-1 pr-3 text-right">Variance</th>
+                    <th className="py-1 text-right"> </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {projects.map((p) => {
+                    const abandoned = (p.status || '').toLowerCase() === 'abandoned'
+                    return (
+                      <tr
+                        key={p.project_id}
+                        className={`border-t border-calm dark:border-cursor-border ${abandoned ? 'opacity-60' : ''}`}
+                      >
+                        <td className={`py-2 pr-3 font-medium ${abandoned ? 'line-through' : ''}`}>
+                          {p.title || `Project #${p.project_id}`}
+                        </td>
+                        <td className="py-2 pr-3">
+                          <div className="flex flex-wrap gap-1">
+                            <Badge color={STATUS_COLOR[(p.status || '').toLowerCase()] || 'slate'}>
+                              {(p.status || 'unknown').replace(/_/g, ' ')}
+                            </Badge>
+                            <StatusBadge status={p.budget_status} />
+                          </div>
+                        </td>
+                        <td className="py-2 pr-3">
+                          <BudgetBar
+                            compact
+                            budget={p.budget_cents}
+                            quoted={p.quoted_cents}
+                            paid={p.actual_cents}
+                          />
+                        </td>
+                        <td className="py-2 pr-3 text-right">{money(p.budget_cents)}</td>
+                        <td className="py-2 pr-3 text-right">{money(p.quoted_cents)}</td>
+                        <td className="py-2 pr-3 text-right">{money(p.actual_cents)}</td>
+                        <td className={`py-2 pr-3 text-right font-semibold ${varianceClass(p.variance_vs_budget_cents)}`}>
+                          <div>{moneySigned(p.variance_vs_budget_cents)}</div>
+                          <div className="text-[11px] font-medium text-shale-500">
+                            {pctSigned(p.variance_vs_budget_pct)}
+                          </div>
+                        </td>
+                        <td className="py-2 text-right">
+                          <button
+                            onClick={() => unlink(p.project_id, p.title)}
+                            className="text-xs font-semibold text-red-600 hover:underline dark:text-red-400"
+                          >
+                            Unlink
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </Card>
 
@@ -419,6 +463,61 @@ function ProgramDetail({ id, onBack, onEdit, onDeleted, onToast }) {
           onToast?.('Project added')
         }}
       />
+    </div>
+  )
+}
+
+function ProjectBudgetCard({ p, onUnlink }) {
+  const abandoned = (p.status || '').toLowerCase() === 'abandoned'
+  return (
+    <div
+      className={`rounded-xl border border-calm p-3 dark:border-cursor-border ${abandoned ? 'opacity-60' : ''}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className={`truncate font-medium ${abandoned ? 'line-through' : ''}`}>
+            {p.title || `Project #${p.project_id}`}
+          </div>
+          <div className="mt-1 flex flex-wrap gap-1">
+            <Badge color={STATUS_COLOR[(p.status || '').toLowerCase()] || 'slate'}>
+              {(p.status || 'unknown').replace(/_/g, ' ')}
+            </Badge>
+            <StatusBadge status={p.budget_status} />
+          </div>
+        </div>
+        <button
+          onClick={() => onUnlink(p.project_id, p.title)}
+          className="shrink-0 text-xs font-semibold text-red-600 hover:underline dark:text-red-400"
+        >
+          Unlink
+        </button>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <div>
+          <div className="text-[11px] font-semibold uppercase text-shale-500">Budget</div>
+          <div className="font-semibold">{money(p.budget_cents)}</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-semibold uppercase text-shale-500">Quoted</div>
+          <div className="font-semibold">{money(p.quoted_cents)}</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-semibold uppercase text-shale-500">Paid</div>
+          <div className="font-semibold" title="Amount paid so far">
+            {money(p.actual_cents)}
+          </div>
+        </div>
+        <div>
+          <div className="text-[11px] font-semibold uppercase text-shale-500">Variance</div>
+          <div className={`font-semibold ${varianceClass(p.variance_vs_budget_cents)}`}>
+            {moneySigned(p.variance_vs_budget_cents)}
+            <span className="ml-1 font-medium text-shale-500">{pctSigned(p.variance_vs_budget_pct)}</span>
+          </div>
+        </div>
+      </div>
+      <div className="mt-3">
+        <BudgetBar compact budget={p.budget_cents} quoted={p.quoted_cents} paid={p.actual_cents} />
+      </div>
     </div>
   )
 }
