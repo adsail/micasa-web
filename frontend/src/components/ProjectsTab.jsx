@@ -343,7 +343,7 @@ function ProjectCard({ p, isDragging, onEdit, onDragStart, onDragEnd, onQuotesCh
         <div className="mt-3 flex items-end justify-between gap-2 text-xs">
           <div className="text-shale-500">
             <div>budget {money(p.budget_cents)}</div>
-            <div>actual {money(p.actual_cents)}</div>
+            <div title="Amount paid so far">paid {money(p.actual_cents)}</div>
           </div>
           {(p.start_date || p.end_date) && (
             <div className="text-right text-shale-500">
@@ -664,7 +664,7 @@ function EditProjectModal({ project, onClose, onSaved, onDeleted }) {
             />
           </div>
           <div>
-            <label className={labelClass}>Actual $</label>
+            <label className={labelClass} title="Amount paid so far">Paid $</label>
             <input
               className={inputClass}
               type="number"

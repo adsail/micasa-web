@@ -51,9 +51,9 @@ function ProgressBar({ budget, spend }) {
   )
 }
 
-function MoneyRow({ label, value, emphasize }) {
+function MoneyRow({ label, value, emphasize, title }) {
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col" title={title}>
       <span className="text-[11px] font-semibold uppercase tracking-wide text-shale-500 dark:text-cursor-muted">
         {label}
       </span>
@@ -138,8 +138,8 @@ export default function ProgramsTab() {
       </div>
 
       <p className="mb-5 text-sm text-shale-500 dark:text-cursor-muted">
-        Group existing projects into a larger effort and track budget vs quotes vs actuals.
-        Remaining = budget − actual (or quoted when a project has no actual yet).
+        Group existing projects into a larger effort and track budget vs quotes vs paid.
+        Remaining = budget minus paid (or quoted when a project has no paid amount yet).
       </p>
 
       {!s.data?.length ? (
@@ -167,8 +167,13 @@ export default function ProgramsTab() {
                 <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <MoneyRow label="Budget" value={p.budget_cents} />
                   <MoneyRow label="Quoted" value={p.quoted_cents} />
-                  <MoneyRow label="Actual" value={p.actual_cents} />
-                  <MoneyRow label="Remaining" value={p.remaining_vs_budget_cents} emphasize />
+                  <MoneyRow label="Paid" value={p.actual_cents} title="Amount paid so far" />
+                  <MoneyRow
+                    label="Remaining"
+                    value={p.remaining_vs_budget_cents}
+                    emphasize
+                    title="Budget minus paid, or quoted when nothing has been paid yet"
+                  />
                 </div>
                 <div className="mt-4">
                   <ProgressBar budget={p.budget_cents} spend={centsOf(p.spend_cents)} />
@@ -293,15 +298,18 @@ function ProgramDetail({ id, onBack, onEdit, onDeleted, onToast }) {
           <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4">
             <Stat label="Budget" value={money(d.budget_cents)} />
             <Stat label="Quoted" value={money(d.quoted_cents)} />
-            <Stat label="Actual" value={money(d.actual_cents)} />
-            <div className="flex flex-col">
+            <Stat label="Paid" value={money(d.actual_cents)} title="Amount paid so far" />
+            <div
+              className="flex flex-col"
+              title="Budget minus paid, or quoted when nothing has been paid yet"
+            >
               <span className="text-[11px] font-semibold uppercase tracking-wide text-shale-500 dark:text-cursor-muted">
                 Remaining
               </span>
               <span className={`text-sm font-semibold ${remainingClass(d.remaining_vs_budget_cents)}`}>
                 {money(d.remaining_vs_budget_cents)}
               </span>
-              <span className="text-xs text-shale-500">budget − actual/quoted</span>
+              <span className="text-xs text-shale-500">budget minus paid or quoted</span>
             </div>
           </div>
           <div className="mt-5">
@@ -323,7 +331,7 @@ function ProgramDetail({ id, onBack, onEdit, onDeleted, onToast }) {
                   <th className="py-1 pr-3">Status</th>
                   <th className="py-1 pr-3 text-right">Budget</th>
                   <th className="py-1 pr-3 text-right">Quoted</th>
-                  <th className="py-1 pr-3 text-right">Actual</th>
+                  <th className="py-1 pr-3 text-right" title="Amount paid so far">Paid</th>
                   <th className="py-1 pr-3 text-right">Variance</th>
                   <th className="py-1 text-right"> </th>
                 </tr>
