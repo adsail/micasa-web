@@ -31,7 +31,14 @@ A $0 budget is intentional; any positive projected spend is over_budget.
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from .db import get_conn, get_programs_conn, is_programs_available, now_utc_str, to_iso_date
+from .db import (
+    backup_programs_db,
+    get_conn,
+    get_programs_conn,
+    is_programs_available,
+    now_utc_str,
+    to_iso_date,
+)
 
 router = APIRouter()
 
@@ -111,6 +118,16 @@ def project_trend(budget_cents, actual_cents, quoted_cents):
 def _require_programs():
     if not is_programs_available():
         raise HTTPException(status_code=404, detail="programs disabled")
+
+
+def _backup_or_abort():
+    """Back up programs.db or raise HTTP 500. Call it inside the route's try,
+    after every check that can refuse the request and immediately before the
+    first write, so refused requests leave no copy."""
+    try:
+        backup_programs_db()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
 
 
 def _placeholders(ids):
@@ -333,7 +350,7 @@ def _next_sort_order(pconn, program_id):
     return int(row["m"]) + 1
 
 
-def _link_project(pconn, program_id, project_id, sort_order, now):
+def _link_project(pconn, program_id, project_id, sort_order, now, backup_first=False):
     existing = pconn.execute(
         """
         SELECT id, deleted_at FROM program_projects
@@ -346,6 +363,8 @@ def _link_project(pconn, program_id, project_id, sort_order, now):
             status_code=400,
             detail=f"project {project_id} is already in this program",
         )
+    if backup_first:
+        _backup_or_abort()
     if existing:
         pconn.execute(
             """
@@ -423,6 +442,7 @@ def create_program(payload: ProgramCreate):
     if pconn is None:
         raise HTTPException(status_code=404, detail="programs disabled")
     try:
+        _backup_or_abort()
         cur = pconn.execute(
             """
             INSERT INTO programs (name, description, created_at, updated_at, deleted_at)
@@ -464,6 +484,7 @@ def update_program(program_id: int, payload: ProgramUpdate):
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="program not found")
+        _backup_or_abort()
         pconn.execute(
             """
             UPDATE programs
@@ -499,6 +520,7 @@ def delete_program(program_id: int):
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="program not found")
+        _backup_or_abort()
         pconn.execute(
             "UPDATE programs SET deleted_at = ?, updated_at = ? WHERE id = ?",
             (now, now, program_id),
@@ -541,7 +563,7 @@ def add_program_project(program_id: int, payload: ProgramProjectAdd):
         sort_order = payload.sort_order
         if sort_order is None:
             sort_order = _next_sort_order(pconn, program_id)
-        _link_project(pconn, program_id, payload.project_id, int(sort_order), now)
+        _link_project(pconn, program_id, payload.project_id, int(sort_order), now, backup_first=True)
         pconn.execute(
             "UPDATE programs SET updated_at = ? WHERE id = ?",
             (now, program_id),
@@ -581,6 +603,7 @@ def remove_program_project(program_id: int, project_id: int):
         ).fetchone()
         if not link:
             raise HTTPException(status_code=404, detail="project is not in this program")
+        _backup_or_abort()
         pconn.execute("DELETE FROM program_projects WHERE id = ?", (link["id"],))
         pconn.execute(
             "UPDATE programs SET updated_at = ? WHERE id = ?",
