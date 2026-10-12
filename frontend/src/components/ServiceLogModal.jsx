@@ -10,7 +10,9 @@ const labelClass = 'mb-1 block text-xs font-semibold uppercase tracking-wide tex
 //  - Date serviced REQUIRED (YYYY-MM-DD)
 //  - Performed by optional (live vendor select, or none)
 //  - Cost optional money; Notes optional text
-// Backend syncs maintenance_items.last_serviced_at from the newest active service log.
+// Backend moves maintenance_items.last_serviced_at forward when a saved log is newer.
+// If the log that set it moves earlier or is deleted, it falls back to the newest
+// remaining log; it is never cleared.
 export default function ServiceLogModal({
   open,
   entry,                 // existing log => edit; null => create

@@ -10,6 +10,7 @@ A self-hostable web UI for [`micasa`](https://github.com/cpcloud/micasa), the te
 - **Programs + budget tracker** (web-only): group existing `micasa` projects into a larger effort (e.g. an office reno made of tile, paint, window treatments) and roll up budget / quotes / actuals. Does **not** change the `micasa` schema — programs live in a separate sqlite DB.
 - **Full CRUD** with `micasa`-exact rules: soft-delete + `deletion_records`, delete guards (e.g. cant delete a vendor with active quotes/incidents), auto-backup of the DB before every write.
 - **Overdue maintenance** notifications: a header bell + count badge opens a drawer of overdue items.
+- **Last-serviced dates follow service logs** (web-only): saving a service log can move its maintenance item's last-serviced date forward. `micasa` itself keeps the two independent.
 - **Light / dark themes**, responsive (mobile hamburger nav, desktop tab bar).
 - **Optional Home OpEx module** (off by default): pulls home-operating spend from a personal-finance source into a burn-rate dashboard (Sankey + trend). Fully separate from `micasa` data. See `docs/opex.md`.
 

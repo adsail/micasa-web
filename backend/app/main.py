@@ -1516,7 +1516,8 @@ class MaintenanceUpdate(BaseModel):
 class ServiceLogCreate(BaseModel):
     # Mirrors micasa ServiceLogEntry + forms.go parseServiceLogFormData.
     # CreateServiceLog inserts a service_log_entries row and optionally
-    # find-or-creates a vendor; it does NOT update maintenance_items.last_serviced_at.
+    # find-or-creates a vendor. Unlike micasa, creating a log here can move
+    # maintenance_items.last_serviced_at forward (_sync_last_serviced_from_logs).
     maintenance_item_id: int
     serviced_at: str  # required YYYY-MM-DD
     vendor_id: int | None = None
@@ -1794,7 +1795,8 @@ def delete_maintenance(item_id: int):
 # (required date), vendor_id (optional, live vendor if set), cost_cents
 # (optional), notes (optional text, blank -> "").
 #
-# STRICT: Create/Update MUST NOT touch maintenance_items.last_serviced_at.
+# Web-only (micasa keeps them independent): create/update/delete can move
+# maintenance_items.last_serviced_at; see _sync_last_serviced_from_logs.
 # Soft-delete entity name for deletion_records: "service_log"
 # (DeletionEntityServiceLog).
 # ---------------------------------------------------------------------------
@@ -1873,41 +1875,68 @@ def list_service_logs(maintenance_item_id: int = Query(...)):
     return out
 
 
-def _sync_last_serviced_from_logs(conn, maintenance_item_id: int) -> None:
-    """Recompute maintenance_items.last_serviced_at from active service logs.
+def _sync_last_serviced_from_logs(conn, maintenance_item_id: int, added=None, removed=None) -> None:
+    """Carry a service-log change over to maintenance_items.last_serviced_at
+    without letting an older log rewind it or a delete clear it.
 
-    Sets last_serviced_at to the newest serviced_at among non-deleted logs for
-    this item, or NULL if there are none. Due dates derived from
-    last_serviced_at + interval then roll automatically. Called after every
-    service-log create/update/delete.
+    `added` is the date of the created or edited log; `removed` is the old
+    date of the edited or deleted log. Dates compare by calendar day, since
+    the TUI, older web code, and this code store them in different formats.
+
+    - An added date later than last_serviced_at becomes the new value.
+      Earlier dates leave it alone.
+    - When last_serviced_at is NULL, or the log that set it (removed ==
+      current) moves earlier or is deleted, the value becomes the newest live
+      log's date. If no live logs remain, it stays as is.
+
+    NULL is never written, and updated_at changes only with the value. Called
+    after every service-log create/update/delete, inside its transaction.
 
     NOTE: intentional UX convenience beyond stock micasa, which keeps
     last_serviced_at and service_log_entries independent.
     """
-    row = conn.execute(
-        """
-        SELECT MAX(serviced_at) AS newest
-          FROM service_log_entries
-         WHERE maintenance_item_id = ? AND deleted_at IS NULL
-        """,
+    item = conn.execute(
+        "SELECT last_serviced_at FROM maintenance_items WHERE id = ? AND deleted_at IS NULL",
         (maintenance_item_id,),
     ).fetchone()
-    newest = row["newest"] if row else None
-    if newest is not None:
-        newest = str(newest)[:10]
+    if not item:
+        return
+    current = to_iso_date(item["last_serviced_at"])
+    added = to_iso_date(added)
+    removed = to_iso_date(removed)
+
+    target = current
+    if current is None or (removed == current and (added is None or added < current)):
+        rows = conn.execute(
+            """
+            SELECT serviced_at
+              FROM service_log_entries
+             WHERE maintenance_item_id = ? AND deleted_at IS NULL
+            """,
+            (maintenance_item_id,),
+        ).fetchall()
+        days = [to_iso_date(r["serviced_at"]) for r in rows]
+        newest = max((d for d in days if d), default=None)
+        if newest is not None:
+            target = newest
+    if added is not None and (target is None or added > target):
+        target = added
+    if target == current:
+        return
     conn.execute(
         """
         UPDATE maintenance_items
            SET last_serviced_at = ?, updated_at = ?
          WHERE id = ? AND deleted_at IS NULL
         """,
-        (newest, now_utc_str(), maintenance_item_id),
+        (date_only_str(target), now_utc_str(), maintenance_item_id),
     )
 
 
 @api.post("/service-logs", status_code=201)
 def create_service_log(payload: ServiceLogCreate):
-    """Insert a service_log_entries row. Does NOT update last_serviced_at."""
+    """Insert a service_log_entries row, then move the item's last_serviced_at
+    forward if this log is newer. An unset date takes the newest live log."""
     if payload.maintenance_item_id is None:
         raise HTTPException(status_code=400, detail="maintenance_item_id is required")
     if not (payload.serviced_at or "").strip():
@@ -1950,7 +1979,7 @@ def create_service_log(payload: ServiceLogCreate):
             (payload.maintenance_item_id, serviced_at, vendor_id, cost_cents, notes, now, now),
         )
         new_id = cur.lastrowid
-        _sync_last_serviced_from_logs(conn, payload.maintenance_item_id)
+        _sync_last_serviced_from_logs(conn, payload.maintenance_item_id, added=serviced_at)
         conn.commit()
         result = _fetch_service_log_row(conn, new_id)
     except HTTPException:
@@ -1967,7 +1996,8 @@ def create_service_log(payload: ServiceLogCreate):
 @api.put("/service-logs/{log_id}")
 def update_service_log(log_id: int, payload: ServiceLogUpdate):
     """Update an existing service log. Parent maintenance_item_id stays fixed.
-    Does NOT touch maintenance_items.last_serviced_at."""
+    The item's last_serviced_at moves forward to a newer date, and falls back
+    to the newest live log when this log set it and moved earlier."""
     if not (payload.serviced_at or "").strip():
         raise HTTPException(status_code=400, detail="serviced_at is required")
 
@@ -1995,7 +2025,7 @@ def update_service_log(log_id: int, payload: ServiceLogUpdate):
     conn = get_write_conn()
     try:
         row = conn.execute(
-            "SELECT id, maintenance_item_id FROM service_log_entries WHERE id = ? AND deleted_at IS NULL",
+            "SELECT id, maintenance_item_id, serviced_at FROM service_log_entries WHERE id = ? AND deleted_at IS NULL",
             (log_id,),
         ).fetchone()
         if not row:
@@ -2013,7 +2043,7 @@ def update_service_log(log_id: int, payload: ServiceLogUpdate):
             """,
             (serviced_at, vendor_id, cost_cents, notes, now, log_id),
         )
-        _sync_last_serviced_from_logs(conn, parent_id)
+        _sync_last_serviced_from_logs(conn, parent_id, added=serviced_at, removed=row["serviced_at"])
         conn.commit()
         result = _fetch_service_log_row(conn, log_id)
     except HTTPException:
@@ -2042,7 +2072,7 @@ def delete_service_log(log_id: int):
     conn = get_write_conn()
     try:
         row = conn.execute(
-            "SELECT id, maintenance_item_id FROM service_log_entries WHERE id = ? AND deleted_at IS NULL",
+            "SELECT id, maintenance_item_id, serviced_at FROM service_log_entries WHERE id = ? AND deleted_at IS NULL",
             (log_id,),
         ).fetchone()
         if not row:
@@ -2057,7 +2087,7 @@ def delete_service_log(log_id: int):
             "VALUES ('service_log', ?, ?, NULL)",
             (log_id, now),
         )
-        _sync_last_serviced_from_logs(conn, row["maintenance_item_id"])
+        _sync_last_serviced_from_logs(conn, row["maintenance_item_id"], removed=row["serviced_at"])
         conn.commit()
     except HTTPException:
         conn.rollback()
