@@ -55,9 +55,9 @@ export function SectionTitle({ children, count }) {
   )
 }
 
-export function Stat({ label, value, sub }) {
+export function Stat({ label, value, sub, title }) {
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col" title={title}>
       <span className="text-[11px] font-semibold uppercase tracking-wide text-shale-500 dark:text-cursor-muted">{label}</span>
       <span className="text-sm font-semibold text-chocolate dark:text-cursor-text">{value ?? '—'}</span>
       {sub && <span className="text-xs text-shale-500">{sub}</span>}

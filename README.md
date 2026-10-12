@@ -55,8 +55,11 @@ Money fields on list/detail:
 | `budget_cents` | Sum of live child `projects.budget_cents` (nulls ignored) |
 | `quoted_cents` | Sum of all non-deleted `quotes.total_cents` for those projects (`accepted_quote_cents` is the same for now) |
 | `actual_cents` | Sum of live child `projects.actual_cents` (nulls ignored) |
-| `spend_cents` | Per project: `actual` if set, else `quoted`; then summed |
-| `remaining_vs_budget_cents` | `budget_cents - spend_cents` — i.e. budget − COALESCE(actual, quoted) |
+| `spend_cents` / `projected_cents` | Per project: `max(quoted, paid)` where paid is `actual_cents` or 0; then summed. This is paid plus any unpaid quote, not COALESCE(actual, quoted). |
+| `remaining_vs_budget_cents` | `budget_cents - spend_cents` when a child budget exists; otherwise null |
+| `variance_vs_budget_cents` | `spend_cents - budget_cents` (positive means over). Null when no child set a budget. |
+| `variance_vs_budget_pct` | Variance as a percent of budget. Null when budget is missing or 0. |
+| `budget_status` | `on_track` / `at_risk` (projected at least 90% of budget) / `over_budget` / `no_budget` |
 
 Create a program after deploy via the **Programs** tab, or with curl (use your own project IDs from `GET /api/projects` — do not hardcode someone else's):
 

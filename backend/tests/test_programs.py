@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from app.programs import compute_rollup
+from app.programs import budget_status, compute_rollup, project_projected, project_trend
 
 
 def _seed_micasa(path):
@@ -66,7 +66,9 @@ def _seed_micasa(path):
 
 
 class RollupMathTest(unittest.TestCase):
-    def test_coalesce_actual_then_quoted(self):
+    def test_projected_is_max_quoted_and_paid(self):
+        # Old COALESCE(actual, quoted) would spend 40+30=70 and drop the $70 quote.
+        # max(quoted, paid) keeps the open quote: 70+30=100.
         roll = compute_rollup(
             [
                 {"budget_cents": 100, "actual_cents": 40, "quoted_cents": 70},
@@ -78,10 +80,23 @@ class RollupMathTest(unittest.TestCase):
         self.assertEqual(roll["quoted_cents"], 100)
         self.assertEqual(roll["accepted_quote_cents"], 100)
         self.assertEqual(roll["actual_cents"], 40)
-        self.assertEqual(roll["spend_cents"], 70)  # 40 + 30
-        self.assertEqual(roll["remaining_vs_budget_cents"], 80)
+        self.assertEqual(roll["spend_cents"], 100)
+        self.assertEqual(roll["projected_cents"], 100)
+        self.assertEqual(roll["remaining_vs_budget_cents"], 50)
+        self.assertEqual(roll["variance_vs_budget_cents"], -50)
+        self.assertEqual(roll["variance_vs_budget_pct"], -33.3)
+        self.assertEqual(roll["budget_status"], "on_track")
         self.assertEqual(roll["project_count"], 3)
         self.assertTrue(roll["has_actuals"])
+
+    def test_paid_above_quote_uses_paid(self):
+        self.assertEqual(project_projected(90, 70), 90)
+        roll = compute_rollup(
+            [{"budget_cents": 80, "actual_cents": 90, "quoted_cents": 70}]
+        )
+        self.assertEqual(roll["spend_cents"], 90)
+        self.assertEqual(roll["variance_vs_budget_cents"], 10)
+        self.assertEqual(roll["budget_status"], "over_budget")
 
     def test_no_actuals_uses_quoted(self):
         roll = compute_rollup(
@@ -90,8 +105,30 @@ class RollupMathTest(unittest.TestCase):
             ]
         )
         self.assertEqual(roll["spend_cents"], 25)
+        self.assertEqual(roll["projected_cents"], 25)
         self.assertEqual(roll["remaining_vs_budget_cents"], 75)
         self.assertFalse(roll["has_actuals"])
+        self.assertEqual(roll["budget_status"], "on_track")
+
+    def test_zero_budget_with_spend_is_over(self):
+        trend = project_trend(0, None, 50)
+        self.assertEqual(trend["spend_cents"], 50)
+        self.assertEqual(trend["variance_vs_budget_cents"], 50)
+        self.assertIsNone(trend["variance_vs_budget_pct"])
+        self.assertEqual(trend["budget_status"], "over_budget")
+
+    def test_missing_budget_is_no_budget(self):
+        self.assertEqual(budget_status(None, 10), "no_budget")
+        trend = project_trend(None, 5, 8)
+        self.assertEqual(trend["spend_cents"], 8)
+        self.assertIsNone(trend["remaining_vs_budget_cents"])
+        self.assertEqual(trend["budget_status"], "no_budget")
+
+    def test_at_risk_at_ninety_percent(self):
+        self.assertEqual(budget_status(100, 89), "on_track")
+        self.assertEqual(budget_status(100, 90), "at_risk")
+        self.assertEqual(budget_status(100, 100), "at_risk")
+        self.assertEqual(budget_status(100, 101), "over_budget")
 
 
 class ProgramsApiTest(unittest.TestCase):
@@ -149,11 +186,21 @@ class ProgramsApiTest(unittest.TestCase):
         self.assertEqual(body["accepted_quote_cents"]["cents"], 218_000)
         # actuals: 150000 + 90000 (windows null) = 240000
         self.assertEqual(body["actual_cents"]["cents"], 240_000)
-        # spend: 150000 + 90000 + 48000 (quoted fallback) = 288000
+        # spend / projected: max(150000,85000)+max(90000,85000)+max(0,48000)=288000
         self.assertEqual(body["spend_cents"]["cents"], 288_000)
+        self.assertEqual(body["projected_cents"]["cents"], 288_000)
         self.assertEqual(body["remaining_vs_budget_cents"]["cents"], 42_000)
+        self.assertEqual(body["variance_vs_budget_cents"]["cents"], -42_000)
+        self.assertEqual(body["budget_status"], "on_track")
+
         titles = {p["title"] for p in body["projects"]}
         self.assertEqual(titles, {"Office | Tile", "Office | Paint", "Office | Windows"})
+        tile = next(p for p in body["projects"] if p["project_id"] == 10)
+        self.assertEqual(tile["projected_cents"]["cents"], 150_000)
+        self.assertEqual(tile["budget_status"], "on_track")
+        paint = next(p for p in body["projects"] if p["project_id"] == 11)
+        self.assertEqual(paint["projected_cents"]["cents"], 90_000)
+        self.assertEqual(paint["budget_status"], "over_budget")
 
     def test_soft_deleted_micasa_project_excluded(self):
         res = self.client.post(

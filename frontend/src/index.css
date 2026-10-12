@@ -12,3 +12,23 @@ body {
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { @apply bg-shale/50 dark:bg-cursor-border rounded-full; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* Quoted / committed fill on budget bars (striped so it reads apart from Paid). */
+.bar-quoted {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    #d4b385,
+    #d4b385 3px,
+    #ebd9bc 3px,
+    #ebd9bc 6px
+  );
+}
+.dark .bar-quoted {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    #4d9eff,
+    #4d9eff 3px,
+    rgba(77, 158, 255, 0.28) 3px,
+    rgba(77, 158, 255, 0.28) 6px
+  );
+}
