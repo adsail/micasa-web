@@ -2566,7 +2566,8 @@ def opex_series():
 
 
 # Web-only Programs layer (separate sqlite). 404s when PROGRAMS_ENABLED is
-# false or the programs DB cannot be created — see db.is_programs_available.
+# false or the programs DB can't be created or read (see
+# db.is_programs_available).
 api.include_router(programs_router)
 
 

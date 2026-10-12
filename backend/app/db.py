@@ -252,8 +252,11 @@ def programs_feature_on():
 def init_programs_db():
     """Create the programs DB file + schema if the feature is on.
 
-    Returns True when the DB is usable. Failures (unwritable path, etc.)
-    return False so local/unauthenticated use still boots without Programs.
+    Returns True when the DB is usable. Failures (unwritable path, corrupt or
+    non-SQLite file, etc.) return False so local/unauthenticated use still
+    boots without Programs. Failures are not cached, so a fixed file is
+    picked up on the next call. Never delete or rewrite a bad file here: it
+    may be the only copy of the user's programs.
     """
     if not programs_feature_on():
         return False
@@ -272,7 +275,7 @@ def init_programs_db():
             conn.close()
         _initialized_program_paths.add(path)
         return True
-    except OSError as e:
+    except (OSError, sqlite3.Error) as e:
         log.warning("programs DB unavailable at %s: %s", path, e)
         return False
 
@@ -284,13 +287,29 @@ def is_programs_available():
     Mirrors OpEx's "missing snapshot → degrade" idea, except Programs is a
     writeable module so a disabled/unusable DB yields 404s instead of empty
     rollups.
+
+    Never raises. The cached path is re-probed on every call (the file is
+    tiny) so a DB that breaks after startup reads as disabled, not a 500.
     """
-    return init_programs_db()
+    if not init_programs_db():
+        return False
+    path = programs_db_path()
+    try:
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute("SELECT 1 FROM programs LIMIT 1").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        _initialized_program_paths.discard(path)
+        log.warning("programs DB unavailable at %s: %s", path, e)
+        return False
+    return True
 
 
 def get_programs_conn():
     """Open a read-write connection to the programs DB. Returns None when
-    the feature is off or the DB cannot be created."""
+    the feature is off or the DB is unusable."""
     if not is_programs_available():
         return None
     conn = sqlite3.connect(programs_db_path(), check_same_thread=False)
