@@ -20,6 +20,7 @@ from .db import (
     today_utc_date_str,
     date_only_str,
     get_opex_conn,
+    opex_feature_on,
     init_programs_db,
     is_programs_available,
 )
@@ -146,6 +147,7 @@ def health():
             "db": "ok",
             "read_only": readonly,
             "programs_enabled": is_programs_available(),
+            "opex_enabled": opex_feature_on(),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"unhealthy: {e}")
@@ -2458,8 +2460,14 @@ def _opex_period_range(period):
 VALID_OPEX_PERIODS = {"this_month", "last_month", "this_year", "last_year", "trailing_12"}
 
 
+def _require_opex():
+    if not opex_feature_on():
+        raise HTTPException(status_code=404, detail="opex disabled")
+
+
 @api.get("/opex/summary")
 def opex_summary(period: str = Query("trailing_12")):
+    _require_opex()
     if period not in VALID_OPEX_PERIODS:
         raise HTTPException(
             status_code=400,
@@ -2548,6 +2556,7 @@ def opex_summary(period: str = Query("trailing_12")):
 def opex_series():
     """Monthly totals across all months in the DB, split by bucket and by
     category, for charting the trend."""
+    _require_opex()
     conn = get_opex_conn()
     if conn is None:
         return {"no_data": True, "months": [], "categories": [], "pulled_at": None}
