@@ -1,7 +1,9 @@
 import os
 import sqlite3
+import unicodedata
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel
@@ -2405,6 +2407,27 @@ def documents():
     return out
 
 
+def _content_disposition(disposition, file_name):
+    """RFC 6266 value: an ASCII filename fallback plus the stored name as a
+    UTF-8 filename*, which browsers prefer. Header values must stay ASCII:
+    Starlette encodes them as Latin-1, and browsers decode raw non-ASCII
+    header bytes inconsistently."""
+
+    def ascii_only(text):
+        text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+        text = "".join("_" if c in '"\\/' or not c.isprintable() else c for c in text)
+        return " ".join(text.split())
+
+    name = "".join(c for c in file_name or "" if unicodedata.category(c) != "Cc")
+    if not name.strip():
+        return f'{disposition}; filename="document"'
+    stem, ext = os.path.splitext(file_name)
+    fallback = (ascii_only(stem) or "document") + ascii_only(ext)
+    # filename* even when it matches the fallback: Chrome percent-decodes a
+    # bare filename, so "Scan%201.pdf" would save as "Scan 1.pdf".
+    return f"{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
+
+
 @api.get("/documents/{doc_id}/raw")
 def document_raw(doc_id: int):
     conn = get_conn()
@@ -2415,10 +2438,13 @@ def document_raw(doc_id: int):
     conn.close()
     if not row or row["data"] is None:
         raise HTTPException(status_code=404, detail="document not found")
-    mime = row["mime_type"] or "application/octet-stream"
+    mime = row["mime_type"]
+    if not (mime and mime.isascii() and mime.isprintable()):
+        mime = "application/octet-stream"
     headers = {
-        "Content-Disposition": f'inline; filename="{row["file_name"] or "document"}"',
+        "Content-Disposition": _content_disposition("inline", row["file_name"]),
         "Cache-Control": "public, max-age=3600",
+        "X-Content-Type-Options": "nosniff",
     }
     return Response(content=bytes(row["data"]), media_type=mime, headers=headers)
 
