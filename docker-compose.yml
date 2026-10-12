@@ -11,17 +11,27 @@ services:
     volumes:
       # Your micasa data dir (must contain micasa.db). Read endpoints open
       # SQLite strictly read-only (mode=ro + query_only); only the write
-      # endpoints open a writable connection, and every mutation is preceded
-      # by an auto-backup written to <dir>/backups.
+      # endpoints open a writable connection, and every mutation that passes
+      # its checks is preceded by an auto-backup written to <dir>/backups
+      # (BACKUP_DIR).
       - ${MICASA_DATA_DIR:-/home/pi/micasa}:/data
       # Optional: OpEx snapshot DB (separate from micasa), mounted read-only.
       # Only used when OPEX_ENABLED=true. Safe to leave; dir is created if set.
       - ${OPEX_DATA_DIR:-/home/pi/opex}:/data/opex:ro
       # Web-only Programs DB (group micasa project IDs + budget rollup).
-      # Separate from micasa.db. Read-write so the UI can create programs.
+      # Separate from micasa.db. Read-write so the UI can create programs;
+      # each programs write that passes its checks is backed up first to
+      # <dir>/backups (PROGRAMS_BACKUP_DIR).
       - ${PROGRAMS_DATA_DIR:-/home/pi/programs}:/data/programs
     environment:
       - STATIC_DIR=/app/static
       - OPEX_ENABLED=${OPEX_ENABLED:-false}
       - PROGRAMS_ENABLED=${PROGRAMS_ENABLED:-true}
       - PROGRAMS_DB_PATH=${PROGRAMS_DB_PATH:-/data/programs/programs.db}
+      # Backup dirs are container paths and must stay inside a mounted volume
+      # above, or backups are lost when the container is recreated.
+      - BACKUP_DIR=${BACKUP_DIR:-/data/backups}
+      - PROGRAMS_BACKUP_DIR=${PROGRAMS_BACKUP_DIR:-/data/programs/backups}
+      - BACKUP_KEEP_LAST=${BACKUP_KEEP_LAST:-10}
+      - BACKUP_KEEP_HOURLY=${BACKUP_KEEP_HOURLY:-24}
+      - BACKUP_KEEP_DAILY=${BACKUP_KEEP_DAILY:-14}

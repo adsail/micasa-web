@@ -246,9 +246,20 @@ def project_detail(project_id: int):
 
 
 # ---------------------------------------------------------------------------
-# WRITE endpoints (the only two mutations in the app). Every write is
-# preceded by a successful auto-backup; if the backup fails, we abort.
+# WRITE endpoints. Every write that passes its validation, lookups, and
+# guards is preceded by a successful auto-backup; if the backup fails, we
+# abort.
 # ---------------------------------------------------------------------------
+def _backup_or_abort():
+    """Back up micasa.db or raise HTTP 500. Call it inside the route's try,
+    after every check that can refuse the request and immediately before the
+    first INSERT/UPDATE, so refused requests leave no copy."""
+    try:
+        backup_db()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
+
+
 def _fetch_project_row(conn, project_id):
     """Return a single project row in the SAME shape as GET /api/projects."""
     row = conn.execute(
@@ -313,15 +324,10 @@ def create_project(payload: ProjectCreate):
     description = payload.description if payload.description not in ("", None) else None
     project_type_id = payload.project_type_id
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
+        _backup_or_abort()
         cur = conn.execute(
             """
             INSERT INTO projects
@@ -356,12 +362,6 @@ def update_project_status(project_id: int, payload: StatusUpdate):
             detail=f"invalid status '{status}'; must be one of {sorted(VALID_STATUSES)}",
         )
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -372,6 +372,7 @@ def update_project_status(project_id: int, payload: StatusUpdate):
         if not row:
             raise HTTPException(status_code=404, detail="project not found")
 
+        _backup_or_abort()
         # Auto-stamp end_date when moving into a terminal status and none set.
         if status in ("completed", "abandoned") and not row["end_date"]:
             conn.execute(
@@ -435,12 +436,6 @@ def update_project(project_id: int, payload: ProjectUpdate):
     description = payload.description if payload.description not in ("", None) else None
     project_type_id = payload.project_type_id
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -457,6 +452,7 @@ def update_project(project_id: int, payload: ProjectUpdate):
         if status in ("completed", "abandoned") and not end_date:
             end_date = today_utc_date_str()
 
+        _backup_or_abort()
         conn.execute(
             """
             UPDATE projects
@@ -487,12 +483,6 @@ def delete_project(project_id: int):
     still has active (non-deleted) quotes, otherwise set deleted_at (and
     updated_at) and record a deletion_records row for undo parity. Never
     hard-deletes the row."""
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -514,6 +504,7 @@ def delete_project(project_id: int):
                 detail=f"project has {active_quotes} active quote(s) -- delete them first",
             )
 
+        _backup_or_abort()
         conn.execute(
             "UPDATE projects SET deleted_at = ?, updated_at = ? WHERE id = ?",
             (now, now, project_id),
@@ -653,12 +644,6 @@ def create_quote(payload: QuoteCreate):
     # micasa stores notes as a trimmed string, blank -> "" (not NULL).
     notes = (payload.notes or "").strip()
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -666,6 +651,7 @@ def create_quote(payload: QuoteCreate):
         _require_live_project(conn, payload.project_id)
         _require_live_vendor(conn, payload.vendor_id)
 
+        _backup_or_abort()
         cur = conn.execute(
             """
             INSERT INTO quotes
@@ -717,12 +703,6 @@ def update_quote(quote_id: int, payload: QuoteUpdate):
 
     notes = (payload.notes or "").strip()
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -736,6 +716,7 @@ def update_quote(quote_id: int, payload: QuoteUpdate):
         _require_live_project(conn, payload.project_id)
         _require_live_vendor(conn, payload.vendor_id)
 
+        _backup_or_abort()
         conn.execute(
             """
             UPDATE quotes
@@ -765,12 +746,6 @@ def delete_quote(quote_id: int):
     """SOFT delete, exactly like micasa's DeleteQuote -> softDelete(&Quote{},
     DeletionEntityQuote, id): set deleted_at and insert a deletion_records row
     with entity='quote', target_id=id, restored_at=NULL. Never hard-deletes."""
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -781,6 +756,7 @@ def delete_quote(quote_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="quote not found")
 
+        _backup_or_abort()
         conn.execute(
             "UPDATE quotes SET deleted_at = ?, updated_at = ? WHERE id = ?",
             (now, now, quote_id),
@@ -1080,15 +1056,10 @@ def create_vendor(payload: VendorCreate):
     website = (payload.website or "").strip()
     notes = (payload.notes or "").strip()
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
+        _backup_or_abort()
         cur = conn.execute(
             """
             INSERT INTO vendors
@@ -1126,12 +1097,6 @@ def update_vendor(vendor_id: int, payload: VendorUpdate):
     website = (payload.website or "").strip()
     notes = (payload.notes or "").strip()
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -1142,6 +1107,7 @@ def update_vendor(vendor_id: int, payload: VendorUpdate):
         if not row:
             raise HTTPException(status_code=404, detail="vendor not found")
 
+        _backup_or_abort()
         conn.execute(
             """
             UPDATE vendors
@@ -1173,12 +1139,6 @@ def delete_vendor(vendor_id: int):
     still has active (non-deleted) quotes or incidents (service logs do NOT
     block, matching micasa), otherwise set deleted_at and record a
     deletion_records row (entity='vendor')."""
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -1208,6 +1168,7 @@ def delete_vendor(vendor_id: int):
                 detail=f"vendor has {active_incidents} active incident(s) -- delete them first",
             )
 
+        _backup_or_abort()
         conn.execute(
             "UPDATE vendors SET deleted_at = ?, updated_at = ? WHERE id = ?",
             (now, now, vendor_id),
@@ -1301,15 +1262,10 @@ def create_appliance(payload: ApplianceCreate):
     if cost_cents is not None and cost_cents < 0:
         raise HTTPException(status_code=400, detail="cost must not be negative")
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
+        _backup_or_abort()
         cur = conn.execute(
             """
             INSERT INTO appliances
@@ -1357,12 +1313,6 @@ def update_appliance(appliance_id: int, payload: ApplianceUpdate):
     if cost_cents is not None and cost_cents < 0:
         raise HTTPException(status_code=400, detail="cost must not be negative")
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -1373,6 +1323,7 @@ def update_appliance(appliance_id: int, payload: ApplianceUpdate):
         if not row:
             raise HTTPException(status_code=404, detail="appliance not found")
 
+        _backup_or_abort()
         conn.execute(
             """
             UPDATE appliances
@@ -1403,12 +1354,6 @@ def delete_appliance(appliance_id: int):
     appliance still has active (non-deleted) maintenance items or incidents,
     otherwise set deleted_at and record a deletion_records row
     (entity='appliance')."""
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -1438,6 +1383,7 @@ def delete_appliance(appliance_id: int):
                 detail=f"appliance has {active_incidents} active incident(s) -- delete them first",
             )
 
+        _backup_or_abort()
         conn.execute(
             "UPDATE appliances SET deleted_at = ?, updated_at = ? WHERE id = ?",
             (now, now, appliance_id),
@@ -1636,18 +1582,13 @@ def create_maintenance(payload: MaintenanceCreate):
     if cost_cents is not None and cost_cents < 0:
         raise HTTPException(status_code=400, detail="cost must not be negative")
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
         _require_live_category(conn, payload.category_id)
         _require_live_appliance(conn, payload.appliance_id)
 
+        _backup_or_abort()
         cur = conn.execute(
             """
             INSERT INTO maintenance_items
@@ -1695,12 +1636,6 @@ def update_maintenance(item_id: int, payload: MaintenanceUpdate):
     if cost_cents is not None and cost_cents < 0:
         raise HTTPException(status_code=400, detail="cost must not be negative")
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -1714,6 +1649,7 @@ def update_maintenance(item_id: int, payload: MaintenanceUpdate):
         _require_live_category(conn, payload.category_id)
         _require_live_appliance(conn, payload.appliance_id)
 
+        _backup_or_abort()
         conn.execute(
             """
             UPDATE maintenance_items
@@ -1743,12 +1679,6 @@ def delete_maintenance(item_id: int):
     """SOFT delete, exactly like micasa's DeleteMaintenance: refuse if the item
     still has active (non-deleted) service log entries, otherwise set deleted_at
     and record a deletion_records row (entity='maintenance')."""
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -1769,6 +1699,7 @@ def delete_maintenance(item_id: int):
                 detail=f"maintenance item has {active_logs} service log(s) -- delete them first",
             )
 
+        _backup_or_abort()
         conn.execute(
             "UPDATE maintenance_items SET deleted_at = ?, updated_at = ? WHERE id = ?",
             (now, now, item_id),
@@ -1961,18 +1892,13 @@ def create_service_log(payload: ServiceLogCreate):
     notes = (payload.notes or "").strip()
     vendor_id = payload.vendor_id
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
         _require_live_maintenance_item(conn, payload.maintenance_item_id)
         _require_optional_live_vendor(conn, vendor_id)
 
+        _backup_or_abort()
         cur = conn.execute(
             """
             INSERT INTO service_log_entries
@@ -2019,12 +1945,6 @@ def update_service_log(log_id: int, payload: ServiceLogUpdate):
     notes = (payload.notes or "").strip()
     vendor_id = payload.vendor_id
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -2038,6 +1958,7 @@ def update_service_log(log_id: int, payload: ServiceLogUpdate):
         parent_id = row["maintenance_item_id"]
         _require_optional_live_vendor(conn, vendor_id)
 
+        _backup_or_abort()
         conn.execute(
             """
             UPDATE service_log_entries
@@ -2066,12 +1987,6 @@ def delete_service_log(log_id: int):
     """SOFT delete, exactly like micasa's DeleteServiceLog -> softDelete(
     &ServiceLogEntry{}, DeletionEntityServiceLog, id): set deleted_at and
     insert a deletion_records row with entity='service_log'."""
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -2082,6 +1997,7 @@ def delete_service_log(log_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="service log not found")
 
+        _backup_or_abort()
         conn.execute(
             "UPDATE service_log_entries SET deleted_at = ?, updated_at = ? WHERE id = ?",
             (now, now, log_id),
@@ -2213,12 +2129,6 @@ def create_incident(payload: IncidentCreate):
     if cost_cents is not None and cost_cents < 0:
         raise HTTPException(status_code=400, detail="cost must not be negative")
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -2227,6 +2137,7 @@ def create_incident(payload: IncidentCreate):
         if payload.vendor_id is not None:
             _require_live_vendor(conn, payload.vendor_id)
 
+        _backup_or_abort()
         cur = conn.execute(
             """
             INSERT INTO incidents
@@ -2284,12 +2195,6 @@ def update_incident(incident_id: int, payload: IncidentUpdate):
     if cost_cents is not None and cost_cents < 0:
         raise HTTPException(status_code=400, detail="cost must not be negative")
 
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -2306,6 +2211,7 @@ def update_incident(incident_id: int, payload: IncidentUpdate):
         if payload.vendor_id is not None:
             _require_live_vendor(conn, payload.vendor_id)
 
+        _backup_or_abort()
         conn.execute(
             """
             UPDATE incidents
@@ -2341,12 +2247,6 @@ def delete_incident(incident_id: int, resolve: bool = Query(False)):
     date_resolved AND soft-deleting it. Passing ?resolve=true stamps
     date_resolved (today, UTC) when it isn't already set, then soft-deletes --
     matching micasa's 'resolve = date_resolved + hide from active list'."""
-    # AUTO-BACKUP BEFORE WRITE. Abort on any failure.
-    try:
-        backup_db()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"backup failed, write aborted: {e}")
-
     now = now_utc_str()
     conn = get_write_conn()
     try:
@@ -2357,6 +2257,7 @@ def delete_incident(incident_id: int, resolve: bool = Query(False)):
         if not row:
             raise HTTPException(status_code=404, detail="incident not found")
 
+        _backup_or_abort()
         if resolve and not row["date_resolved"]:
             conn.execute(
                 "UPDATE incidents SET date_resolved = ?, deleted_at = ?, updated_at = ? WHERE id = ?",

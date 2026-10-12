@@ -8,7 +8,7 @@ A self-hostable web UI for [`micasa`](https://github.com/cpcloud/micasa), the te
 
 - **All entities**: House profile, Projects (kanban), Quotes, Maintenance, Incidents, Appliances, Vendors, Documents.
 - **Programs + budget tracker** (web-only): group existing `micasa` projects into a larger effort (e.g. an office reno made of tile, paint, window treatments) and roll up budget / quotes / actuals. Does **not** change the `micasa` schema — programs live in a separate sqlite DB.
-- **Full CRUD** with `micasa`-exact rules: soft-delete + `deletion_records`, delete guards (e.g. cant delete a vendor with active quotes/incidents), auto-backup of the DB before every write.
+- **Full CRUD** with `micasa`-exact rules: soft-delete + `deletion_records`, delete guards (e.g. cant delete a vendor with active quotes/incidents), auto-backup of `micasa.db` (and of `programs.db` for Programs edits) before every write that passes its checks.
 - **Overdue maintenance** notifications: a header bell + count badge opens a drawer of overdue items.
 - **Last-serviced dates follow service logs** (web-only): saving a service log can move its maintenance item's last-serviced date forward. `micasa` itself keeps the two independent.
 - **Light / dark themes**, responsive (mobile hamburger nav, desktop tab bar).
@@ -16,7 +16,7 @@ A self-hostable web UI for [`micasa`](https://github.com/cpcloud/micasa), the te
 
 ## Stack
 
-- **Backend**: FastAPI + uvicorn. Reads are opened strictly read-only (`mode=ro` + `PRAGMA query_only`); only mutations open a writable connection, and every mutation is preceded by an auto-backup.
+- **Backend**: FastAPI + uvicorn. Reads are opened strictly read-only (`mode=ro` + `PRAGMA query_only`); only mutations open a writable connection, and every mutation that passes validation, its lookups, and its delete guards is preceded by an auto-backup of the database it changes (`micasa.db` or `programs.db`). If that backup fails, the write is aborted with HTTP 500. Requests refused with a 400 or 404 make no copy.
 - **Frontend**: React + Vite + Tailwind, served same-origin by the backend.
 - **Deploy**: Docker + docker-compose.
 
@@ -38,12 +38,19 @@ Then open http://localhost:8282.
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `MICASA_DATA_DIR` | `/home/pi/micasa` | Host dir bind-mounted to `/data`; must contain `micasa.db`. Backups are written to `<dir>/backups`. |
+| `MICASA_DATA_DIR` | `/home/pi/micasa` | Host dir bind-mounted to `/data`; must contain `micasa.db`. Backups are written to `<dir>/backups` by default (see `BACKUP_DIR`). |
 | `PORT` | `8282` | Host port. |
 | `OPEX_ENABLED` | `false` | Enables the optional Home OpEx tab + `/api/opex/*`. When off, `/api/opex/*` return **404** and the tab is hidden; `/api/health` reports `opex_enabled` so the frontend knows whether to show it. |
 | `PROGRAMS_ENABLED` | `true` | Enables the Programs tab + `/api/programs/*`. Defaults on when `PROGRAMS_DB_PATH` is set (including the built-in default). Set `false` to hide the tab. If the programs DB cannot be created, `/api/health` reports `programs_enabled: false` and the tab is hidden. |
 | `PROGRAMS_DB_PATH` | `/data/programs/programs.db` | Path **inside the container** to the programs sqlite file (not `micasa.db`). |
 | `PROGRAMS_DATA_DIR` | `/home/pi/programs` | Host dir bind-mounted read-write to `/data/programs`. |
+| `BACKUP_DIR` | `/data/backups` | Path **inside the container** for `micasa-<UTC timestamp>.db` backups. Must point inside a mounted volume or backups vanish with the container; the default lives in `MICASA_DATA_DIR`. |
+| `PROGRAMS_BACKUP_DIR` | `/data/programs/backups` | Path **inside the container** for `programs-<UTC timestamp>.db` backups. Defaults to a `backups` folder beside `PROGRAMS_DB_PATH`, which lives in `PROGRAMS_DATA_DIR`. Same volume rule as `BACKUP_DIR`. |
+| `BACKUP_KEEP_LAST` | `10` | Always keep the newest N backups of each database. |
+| `BACKUP_KEEP_HOURLY` | `24` | Also keep the newest backup in each of the last N UTC clock hours (the current hour counts). |
+| `BACKUP_KEEP_DAILY` | `14` | Also keep the newest backup in each of the last N UTC days (today counts). |
+
+After each backup, older `micasa-*.db` and `programs-*.db` files are pruned separately: anything not kept by `BACKUP_KEEP_LAST`, `BACKUP_KEEP_HOURLY`, or `BACKUP_KEEP_DAILY` is deleted. The defaults keep at most 48 files per database and reach back two weeks. Each file is a full copy of its database, and `micasa.db` copies include stored documents, so size the volume for that. An invalid or negative `BACKUP_KEEP_*` value falls back to its default with a logged warning, and the newest backup is always kept.
 
 ## Programs (web-only budget rollup)
 
